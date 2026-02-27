@@ -8,14 +8,10 @@ import requests
 from datetime import datetime
 import time
 import os
-import threading
 
 st.set_page_config(layout="wide")
 st.title("🇨🇳 A股 T+1 主动交易系统")
 
-# ----------------------------
-# 配置 API Key
-# ----------------------------
 API_TOKEN = st.secrets.get("ITICK_API_KEY")
 if not API_TOKEN:
     st.error("请在 Streamlit Secrets 中配置 ITICK_API_KEY")
@@ -23,7 +19,6 @@ if not API_TOKEN:
 HEADERS = {"accept": "application/json", "token": API_TOKEN}
 
 CACHE_FILE = "stock_cache.csv"
-PROGRESS_FILE = "progress.txt"
 
 # ----------------------------
 # 工具函数
@@ -52,9 +47,9 @@ def fetch_stock_info(region, code):
     return {}
 
 # ----------------------------
-# 全市场抓取函数（后台线程 + 进度写入）
+# 数据抓取函数（带进度返回）
 # ----------------------------
-def fetch_full_market_progress():
+def fetch_full_market(progress_placeholder, bar_placeholder):
     sh_stocks = fetch_symbol_list("SH")
     sz_stocks = fetch_symbol_list("SZ")
     universe = pd.concat([sh_stocks, sz_stocks], ignore_index=True)
@@ -81,58 +76,42 @@ def fetch_full_market_progress():
                 "涨跌幅": change,
                 "成交量": turnover
             })
-        # 写入进度
-        with open(PROGRESS_FILE,"w") as f:
-            f.write(f"{i+1}/{total_batches}")
+        # 更新进度
+        progress = (i+1)/total_batches
+        progress_placeholder.text(f"正在抓取全市场数据: 批次 {i+1}/{total_batches}")
+        bar_placeholder.progress(progress)
         time.sleep(1)  # 避免超限
 
     df = pd.DataFrame(records)
     if not df.empty:
         df.to_csv(CACHE_FILE, index=False)
-    # 完成后清除进度
-    if os.path.exists(PROGRESS_FILE):
-        os.remove(PROGRESS_FILE)
+    progress_placeholder.text("全市场数据抓取完成！")
+    bar_placeholder.progress(1.0)
+    return df
 
 # ----------------------------
-# 加载缓存
+# 主逻辑
 # ----------------------------
-@st.cache_data(ttl=86400)
-def load_cached_data():
-    if os.path.exists(CACHE_FILE):
-        return pd.read_csv(CACHE_FILE)
-    return pd.DataFrame()
+if os.path.exists(CACHE_FILE):
+    df = pd.read_csv(CACHE_FILE)
+    st.success(f"加载缓存数据，共 {len(df)} 条股票记录")
+else:
+    df = pd.DataFrame()
 
-df = load_cached_data()
+progress_placeholder = st.empty()
+bar_placeholder = st.progress(0.0)
 
-# ----------------------------
-# 启动后台线程抓取
-# ----------------------------
-threading.Thread(target=fetch_full_market_progress, daemon=True).start()
-
-# ----------------------------
-# 显示后台进度
-# ----------------------------
-if os.path.exists(PROGRESS_FILE):
-    progress_text = st.empty()
-    progress_bar = st.progress(0)
-    def update_progress():
-        while os.path.exists(PROGRESS_FILE):
-            with open(PROGRESS_FILE,"r") as f:
-                line = f.read()
-            try:
-                current, total = map(int,line.strip().split("/"))
-                progress_bar.progress(current/total)
-                progress_text.text(f"后台更新中: 批次 {current}/{total}")
-            except:
-                pass
-            time.sleep(1)
-    threading.Thread(target=update_progress, daemon=True).start()
-
-# ----------------------------
-# 如果缓存为空，提示用户
-# ----------------------------
 if df.empty:
-    st.warning("全市场数据正在更新，请稍后刷新页面查看最新数据。")
+    # 如果缓存为空，必须等待抓取
+    df = fetch_full_market(progress_placeholder, bar_placeholder)
+else:
+    # 启动后台更新（可选）
+    st.info("后台正在更新全市场数据…")
+    import threading
+    threading.Thread(target=fetch_full_market, args=(progress_placeholder, bar_placeholder), daemon=True).start()
+
+if df.empty:
+    st.warning("全市场数据仍在更新，请稍后刷新页面。")
     st.stop()
 
 # ----------------------------
