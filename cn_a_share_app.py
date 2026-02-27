@@ -8,9 +8,10 @@ import requests
 from datetime import datetime
 import time
 import os
+import threading
 
 st.set_page_config(layout="wide")
-st.title("🇨🇳 A股 T+1 主动交易系统 (iTick Free API 云端缓存版)")
+st.title("🇨🇳 A股 T+1 主动交易系统")
 
 # ----------------------------
 # 配置 API Key
@@ -19,13 +20,10 @@ API_TOKEN = st.secrets.get("ITICK_API_KEY")
 if not API_TOKEN:
     st.error("请在 Streamlit Secrets 中配置 ITICK_API_KEY")
     st.stop()
-
 HEADERS = {"accept": "application/json", "token": API_TOKEN}
 
-# ----------------------------
-# 缓存文件路径
-# ----------------------------
 CACHE_FILE = "stock_cache.csv"
+PROGRESS_FILE = "progress.txt"
 
 # ----------------------------
 # 工具函数
@@ -35,7 +33,6 @@ def fetch_symbol_list(region):
     r = requests.get(url, headers=HEADERS)
     if r.status_code == 200:
         df = pd.DataFrame(r.json().get("data", []))
-        # 重命名列，方便后续使用
         df = df.rename(columns={"c":"symbol", "n":"name", "e":"region"})
         return df
     return pd.DataFrame()
@@ -55,29 +52,20 @@ def fetch_stock_info(region, code):
     return {}
 
 # ----------------------------
-# 数据抓取/缓存逻辑
+# 全市场抓取函数（后台线程 + 进度写入）
 # ----------------------------
-@st.cache_data(ttl=86400)  # 每天刷新一次缓存
-def load_data():
-    if os.path.exists(CACHE_FILE):
-        df = pd.read_csv(CACHE_FILE)
-        return df
-    # 如果缓存不存在，抓取全市场
-    st.info("正在抓取全市场股票数据，请稍等…")
+def fetch_full_market_progress():
     sh_stocks = fetch_symbol_list("SH")
     sz_stocks = fetch_symbol_list("SZ")
     universe = pd.concat([sh_stocks, sz_stocks], ignore_index=True)
-    if universe.empty:
-        st.error("获取股票列表失败")
-        st.stop()
-
+    total_batches = (len(universe) // 50) + 1
     records = []
-    batch_size = 50
-    for start in range(0, len(universe), batch_size):
-        batch = universe.iloc[start:start+batch_size]
+
+    for i, start in enumerate(range(0, len(universe), 50)):
+        batch = universe.iloc[start:start+50]
         for _, row in batch.iterrows():
-            region = row["region"]    # iTick返回的交易所字段
-            code = row["symbol"]      # iTick返回的股票代码字段
+            region = row["region"]
+            code = row["symbol"]
             info = fetch_stock_info(region, code)
             quote = fetch_quote(region, code)
             if not info or not quote:
@@ -93,18 +81,58 @@ def load_data():
                 "涨跌幅": change,
                 "成交量": turnover
             })
-        time.sleep(1)  # 延时避免超限
+        # 写入进度
+        with open(PROGRESS_FILE,"w") as f:
+            f.write(f"{i+1}/{total_batches}")
+        time.sleep(1)  # 避免超限
+
     df = pd.DataFrame(records)
     if not df.empty:
         df.to_csv(CACHE_FILE, index=False)
-    return df
+    # 完成后清除进度
+    if os.path.exists(PROGRESS_FILE):
+        os.remove(PROGRESS_FILE)
 
 # ----------------------------
-# 加载数据
+# 加载缓存
 # ----------------------------
-df = load_data()
+@st.cache_data(ttl=86400)
+def load_cached_data():
+    if os.path.exists(CACHE_FILE):
+        return pd.read_csv(CACHE_FILE)
+    return pd.DataFrame()
+
+df = load_cached_data()
+
+# ----------------------------
+# 启动后台线程抓取
+# ----------------------------
+threading.Thread(target=fetch_full_market_progress, daemon=True).start()
+
+# ----------------------------
+# 显示后台进度
+# ----------------------------
+if os.path.exists(PROGRESS_FILE):
+    progress_text = st.empty()
+    progress_bar = st.progress(0)
+    def update_progress():
+        while os.path.exists(PROGRESS_FILE):
+            with open(PROGRESS_FILE,"r") as f:
+                line = f.read()
+            try:
+                current, total = map(int,line.strip().split("/"))
+                progress_bar.progress(current/total)
+                progress_text.text(f"后台更新中: 批次 {current}/{total}")
+            except:
+                pass
+            time.sleep(1)
+    threading.Thread(target=update_progress, daemon=True).start()
+
+# ----------------------------
+# 如果缓存为空，提示用户
+# ----------------------------
 if df.empty:
-    st.error("个股数据为空")
+    st.warning("全市场数据正在更新，请稍后刷新页面查看最新数据。")
     st.stop()
 
 # ----------------------------
