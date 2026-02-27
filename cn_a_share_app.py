@@ -20,7 +20,7 @@ if not API_TOKEN:
     st.error("请在 Streamlit Secrets 中配置 ITICK_API_KEY")
     st.stop()
 
-HEADERS = {"accept":"application/json", "token": API_TOKEN}
+HEADERS = {"accept": "application/json", "token": API_TOKEN}
 
 # ----------------------------
 # 缓存文件路径
@@ -34,7 +34,10 @@ def fetch_symbol_list(region):
     url = f"https://api.itick.org/symbol/list?type=stock&region={region}"
     r = requests.get(url, headers=HEADERS)
     if r.status_code == 200:
-        return pd.DataFrame(r.json().get("data", []))
+        df = pd.DataFrame(r.json().get("data", []))
+        # 重命名列，方便后续使用
+        df = df.rename(columns={"c":"symbol", "n":"name", "e":"region"})
+        return df
     return pd.DataFrame()
 
 def fetch_quote(region, code):
@@ -73,8 +76,8 @@ def load_data():
     for start in range(0, len(universe), batch_size):
         batch = universe.iloc[start:start+batch_size]
         for _, row in batch.iterrows():
-            region = row["region"]
-            code = row["symbol"]
+            region = row["region"]    # iTick返回的交易所字段
+            code = row["symbol"]      # iTick返回的股票代码字段
             info = fetch_stock_info(region, code)
             quote = fetch_quote(region, code)
             if not info or not quote:
