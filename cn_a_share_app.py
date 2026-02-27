@@ -4,111 +4,65 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
-import requests
 from datetime import datetime
 import time
-import os
 
 st.set_page_config(layout="wide")
-st.title("🇨🇳 CSI 300 T+1 主动交易系统 (Free API + CSV)")
+st.title("🇨🇳 CSI 300 T+1 主动交易系统 (CSV + 测试数据)")
 
 # ----------------------------
-# iTick Free API Key
+# Load CSV
 # ----------------------------
-API_TOKEN = st.secrets.get("ITICK_API_KEY")
-if not API_TOKEN:
-    st.error("请在 Streamlit Secrets 中配置 ITICK_API_KEY")
-    st.stop()
-HEADERS = {"accept": "application/json", "token": API_TOKEN}
-
-CACHE_FILE = "csi300_cache.csv"
-CSV_FILE = "csi300_full.csv"  # Full CSI300 list CSV
-
-# ----------------------------
-# Read CSI300 CSV
-# ----------------------------
-if not os.path.exists(CSV_FILE):
-    st.error(f"请在应用目录中添加 {CSV_FILE}，包含 symbol,name,region 列")
+CSV_FILE = "csi300_full.csv"
+try:
+    csi300_df = pd.read_csv(CSV_FILE)
+except Exception as e:
+    st.error(f"无法读取 {CSV_FILE}：{e}")
     st.stop()
 
-csi300_df = pd.read_csv(CSV_FILE)
-
 # ----------------------------
-# API fetch functions
-# ----------------------------
-def fetch_quote(region, code):
-    url = f"https://api.itick.org/stock/quote?region={region}&code={code}"
-    r = requests.get(url, headers=HEADERS)
-    if r.status_code == 200:
-        return r.json().get("data", {})
-    return {}
-
-def fetch_stock_info(region, code):
-    url = f"https://api.itick.org/stock/info?region={region}&code={code}"
-    r = requests.get(url, headers=HEADERS)
-    if r.status_code == 200:
-        return r.json().get("data", {})
-    return {}
-
-# ----------------------------
-# Fetch quotes with progress bar
+# Progress bar placeholder
 # ----------------------------
 progress_placeholder = st.empty()
 bar_placeholder = st.progress(0.0)
 
+# ----------------------------
+# Simulate quotes for testing
+# ----------------------------
 records = []
-total_batches = (len(csi300_df) // 50) + 1
-
-for i, start in enumerate(range(0, len(csi300_df), 50)):
-    batch = csi300_df.iloc[start:start+50]
-    for _, row in batch.iterrows():
-        code = row["symbol"]
-        region = row["region"]
-        name = row["name"]
-        quote = fetch_quote(region, code)
-        info = fetch_stock_info(region, code)
-        if not quote:
-            continue
-        sector = info.get("i","其他板块") if info else "其他板块"
-        change = quote.get("change", 0)
-        turnover = quote.get("turnover", 0)
-        records.append({
-            "代码": code,
-            "名称": name,
-            "板块": sector,
-            "涨跌幅": change,
-            "成交量": turnover
-        })
-    progress_placeholder.text(f"抓取 CSI300 数据: 批次 {i+1}/{total_batches}")
-    bar_placeholder.progress((i+1)/total_batches)
-    time.sleep(0.5)  # avoid hitting free API limits
+total = len(csi300_df)
+for i, row in enumerate(csi300_df.itertuples()):
+    code = row.symbol
+    name = row.name
+    region = row.region
+    # Simulated data
+    change = round(np.random.uniform(-3, 3), 2)
+    turnover = int(np.random.uniform(1000, 100000))
+    sector = f"板块{np.random.randint(1,5)}"  # simulate 4 sectors
+    records.append({
+        "代码": code,
+        "名称": name,
+        "板块": sector,
+        "涨跌幅": change,
+        "成交量": turnover
+    })
+    # update progress
+    progress_placeholder.text(f"抓取 CSI300 数据: {i+1}/{total}")
+    bar_placeholder.progress((i+1)/total)
+    time.sleep(0.05)  # small delay to show progress
 
 df = pd.DataFrame(records)
-
-# ----------------------------
-# Ensure '板块' exists
-# ----------------------------
-if df.empty:
-    st.warning("CSI300 数据仍在更新，请稍后刷新页面。")
-    st.stop()
-
-df["板块"] = df.get("板块", pd.Series(["其他板块"]*len(df)))
-df["板块"] = df["板块"].fillna("其他板块")
-
-# Save cache
-df.to_csv(CACHE_FILE, index=False)
-
 progress_placeholder.text("CSI300 数据抓取完成！")
 bar_placeholder.progress(1.0)
 
 # ----------------------------
-# 板块动量打分
+# 板块热度排行榜
 # ----------------------------
 sector_score = df.groupby("板块").agg({
     "涨跌幅":"mean",
     "成交量":"sum"
 }).reset_index()
-sector_score["热度"] = sector_score["涨跌幅"] + sector_score["成交量"]/1e6
+sector_score["热度"] = sector_score["涨跌幅"] + sector_score["成交量"]/1e5
 sector_score = sector_score.sort_values("热度", ascending=False)
 top_sectors = sector_score.head(10)
 
@@ -118,14 +72,14 @@ st.dataframe(top_sectors, use_container_width=True)
 # ----------------------------
 # 板块龙头个股
 # ----------------------------
-df["评分"] = df["涨跌幅"] + df["成交量"]/1e6
+df["评分"] = df["涨跌幅"] + df["成交量"]/1e5
 top_stocks = df.sort_values("评分", ascending=False).groupby("板块").head(3)
 
 st.subheader("🔍 板块龙头个股")
 st.dataframe(top_stocks[["板块","代码","名称","涨跌幅","成交量"]], use_container_width=True)
 
 # ----------------------------
-# 风险评分
+# 综合评分
 # ----------------------------
 macro_score = 50
 liquidity_score = 50
