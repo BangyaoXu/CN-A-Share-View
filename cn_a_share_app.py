@@ -10,25 +10,31 @@ import time
 import os
 
 st.set_page_config(layout="wide")
-st.title("🇨🇳 A股 T+1 主动交易系统")
+st.title("🇨🇳 CSI 300 T+1 主动交易系统 (iTick Free API + 进度显示)")
 
+# ----------------------------
+# iTick API Key (set in Streamlit Secrets)
+# ----------------------------
 API_TOKEN = st.secrets.get("ITICK_API_KEY")
 if not API_TOKEN:
     st.error("请在 Streamlit Secrets 中配置 ITICK_API_KEY")
     st.stop()
-HEADERS = {"accept": "application/json", "token": API_TOKEN}
 
-CACHE_FILE = "stock_cache.csv"
+HEADERS = {"accept": "application/json", "token": API_TOKEN}
+CACHE_FILE = "csi300_cache.csv"
 
 # ----------------------------
 # 工具函数
 # ----------------------------
-def fetch_symbol_list(region):
-    url = f"https://api.itick.org/symbol/list?type=stock&region={region}"
+def fetch_csi300_components():
+    """获取 CSI300 成分股"""
+    url = "https://api.itick.org/index/component?region=CN&code=000300"
     r = requests.get(url, headers=HEADERS)
     if r.status_code == 200:
-        df = pd.DataFrame(r.json().get("data", []))
-        df = df.rename(columns={"c":"symbol", "n":"name", "e":"region"})
+        data = r.json().get("data", [])
+        df = pd.DataFrame(data)
+        if not df.empty:
+            df = df.rename(columns={"c":"symbol","n":"name","e":"region"})
         return df
     return pd.DataFrame()
 
@@ -47,25 +53,27 @@ def fetch_stock_info(region, code):
     return {}
 
 # ----------------------------
-# 数据抓取函数（带进度返回）
+# 全市场抓取函数（CSI300）+进度
 # ----------------------------
-def fetch_full_market(progress_placeholder, bar_placeholder):
-    sh_stocks = fetch_symbol_list("SH")
-    sz_stocks = fetch_symbol_list("SZ")
-    universe = pd.concat([sh_stocks, sz_stocks], ignore_index=True)
-    total_batches = (len(universe) // 50) + 1
+def fetch_csi300_full(progress_placeholder, bar_placeholder):
+    df_components = fetch_csi300_components()
+    if df_components.empty:
+        st.error("无法获取 CSI300 成分股，请检查 API Key 或网络")
+        return pd.DataFrame()
+
+    total_batches = (len(df_components) // 50) + 1
     records = []
 
-    for i, start in enumerate(range(0, len(universe), 50)):
-        batch = universe.iloc[start:start+50]
+    for i, start in enumerate(range(0, len(df_components), 50)):
+        batch = df_components.iloc[start:start+50]
         for _, row in batch.iterrows():
-            region = row["region"]
             code = row["symbol"]
+            region = row["region"] if "region" in row else ("SH" if code.startswith("6") else "SZ")
             info = fetch_stock_info(region, code)
             quote = fetch_quote(region, code)
             if not info or not quote:
                 continue
-            name = info.get("n","")
+            name = row["name"]
             sector = info.get("i","其他板块")
             change = quote.get("change",0)
             turnover = quote.get("turnover",0)
@@ -78,19 +86,19 @@ def fetch_full_market(progress_placeholder, bar_placeholder):
             })
         # 更新进度
         progress = (i+1)/total_batches
-        progress_placeholder.text(f"正在抓取全市场数据: 批次 {i+1}/{total_batches}")
+        progress_placeholder.text(f"抓取 CSI300 数据: 批次 {i+1}/{total_batches}")
         bar_placeholder.progress(progress)
-        time.sleep(1)  # 避免超限
+        time.sleep(1)  # 避免免费 API 限制
 
     df = pd.DataFrame(records)
     if not df.empty:
         df.to_csv(CACHE_FILE, index=False)
-    progress_placeholder.text("全市场数据抓取完成！")
+    progress_placeholder.text("CSI300 数据抓取完成！")
     bar_placeholder.progress(1.0)
     return df
 
 # ----------------------------
-# 主逻辑
+# 加载缓存
 # ----------------------------
 if os.path.exists(CACHE_FILE):
     df = pd.read_csv(CACHE_FILE)
@@ -103,15 +111,15 @@ bar_placeholder = st.progress(0.0)
 
 if df.empty:
     # 如果缓存为空，必须等待抓取
-    df = fetch_full_market(progress_placeholder, bar_placeholder)
+    df = fetch_csi300_full(progress_placeholder, bar_placeholder)
 else:
-    # 启动后台更新（可选）
-    st.info("后台正在更新全市场数据…")
+    # 可选：后台更新
+    st.info("后台正在更新 CSI300 数据…")
     import threading
-    threading.Thread(target=fetch_full_market, args=(progress_placeholder, bar_placeholder), daemon=True).start()
+    threading.Thread(target=fetch_csi300_full, args=(progress_placeholder, bar_placeholder), daemon=True).start()
 
 if df.empty:
-    st.warning("全市场数据仍在更新，请稍后刷新页面。")
+    st.warning("CSI300 数据仍在更新，请稍后刷新页面。")
     st.stop()
 
 # ----------------------------
