@@ -22,8 +22,11 @@ def get_index_data():
 
 @st.cache_data(ttl=600)
 def get_north_money():
-    df = ak.stock_hsgt_north_net_flow_in_em()
-    return df
+    try:
+        df = ak.stock_hsgt_hist_em()
+        return df
+    except Exception as e:
+        return pd.DataFrame()
 
 @st.cache_data(ttl=600)
 def get_limit_up():
@@ -47,7 +50,10 @@ if latest["close"] > latest["MA200"]:
     macro_score += 25
 
 north_df = get_north_money()
-north_today = north_df.iloc[-1]["当日净流入"]
+if not north_df.empty:
+    north_today = north_df.iloc[-1]["当日净流入"]
+else:
+    north_today = 0
 
 liquidity_score = 50
 if north_today > 0:
