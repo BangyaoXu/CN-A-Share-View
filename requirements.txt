@@ -3,5 +3,4 @@ pandas
 numpy
 plotly
 yfinance
-requests
-beautifulsoup4
+akshare>=1.14.0
