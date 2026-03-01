@@ -2,9 +2,6 @@ streamlit
 pandas
 numpy
 plotly
-akshare
+yfinance
 requests
-lxml
 beautifulsoup4
-html5lib
-textblob
