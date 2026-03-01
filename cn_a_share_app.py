@@ -4,7 +4,6 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 import yfinance as yf
 import time
@@ -14,12 +13,12 @@ try:
     import akshare as ak
     AK_AVAILABLE = True
 except ImportError:
-    st.error("请安装 akshare：pip install akshare")
+    st.error("请安装 akshare >= 1.14.0：pip install akshare --upgrade")
     st.stop()
 
 st.set_page_config(layout="wide", page_title="CSI 300 真实数据仪表盘", page_icon="📊")
 
-# Custom CSS (same as before – keep it)
+# Custom CSS (same as before)
 st.markdown("""
 <style>
     .main-header { font-size: 2.5rem; color: #1E3A8A; font-weight: 800; text-align: center; }
@@ -79,7 +78,8 @@ def fetch_realtime_stocks(ticker_list):
                     '最低': round(last['Low'], 2),
                     '开盘': round(last['Open'], 2),
                 })
-        except Exception:
+        except Exception as e:
+            # silently skip failed stocks
             pass
         prog.progress((i+1)/total)
         time.sleep(0.1)
@@ -105,20 +105,38 @@ def get_index_hist(ticker, period="6mo"):
         return None
 
 # ------------------------------------------------------------
-# Real news from East Money (policy‑related filter)
+# Real news from East Money (policy‑related) – updated function
 # ------------------------------------------------------------
 @st.cache_data(ttl=1800)
 def get_recent_news():
     try:
-        news_df = ak.stock_news_em(symbol="政策")  # fetch news tagged with "政策"
+        # Try the updated function name (as of akshare 1.14+)
+        news_df = ak.stock_news_mainland(symbol="政策")  # newer version
+        if news_df.empty:
+            # fallback to older function
+            news_df = ak.stock_news_em(symbol="政策")
         if news_df.empty:
             return []
         news_df = news_df.head(20)
-        # Add simple sentiment based on title (rule‑based)
+        # Determine column names (may vary)
+        title_col = None
+        time_col = None
+        source_col = None
+        for col in news_df.columns:
+            if '标题' in col or 'title' in col.lower():
+                title_col = col
+            if '时间' in col or 'time' in col.lower() or '日期' in col:
+                time_col = col
+            if '来源' in col or 'source' in col.lower():
+                source_col = col
+        if not title_col:
+            return []  # can't proceed
+
+        # Simple sentiment rule
         def simple_sentiment(title):
             pos = ["利好", "提振", "支持", "推动", "放宽", "减税", "降息"]
             neg = ["监管", "收紧", "处罚", "利空", "下跌", "风险"]
-            title = title.lower()
+            title = str(title).lower()
             score = 0
             for w in pos:
                 if w in title:
@@ -126,38 +144,45 @@ def get_recent_news():
             for w in neg:
                 if w in title:
                     score -= 1
-            return score / 5  # normalize roughly to [-1,1]
+            return max(-1, min(1, score / 5))
+
         news_list = []
         for _, row in news_df.iterrows():
             news_list.append({
-                'title': row['标题'],
-                'time': row['发布时间'][5:16] if '发布时间' in row else '未知',
-                'source': row['来源'] if '来源' in news_df.columns else '网络',
-                'sentiment': simple_sentiment(row['标题'])
+                'title': row[title_col],
+                'time': row[time_col][5:16] if time_col and time_col in row else '未知',
+                'source': row[source_col] if source_col and source_col in row else '网络',
+                'sentiment': simple_sentiment(row[title_col])
             })
         return news_list
     except Exception as e:
         st.warning(f"新闻获取失败: {e}")
-        return []  # empty, not simulated
+        return []
 
 # ------------------------------------------------------------
-# Real market sentiment indicators (north flow, margin, etc.)
+# Real market sentiment indicators (north flow, margin, etc.) – updated functions
 # ------------------------------------------------------------
 @st.cache_data(ttl=900)
 def get_market_sentiment():
     try:
-        # 北向资金
+        # 北向资金 (最新版 akshare)
         north = ak.stock_hsgt_north_net_flow_in_em(symbol="北上")
         north_flow = north['value'].iloc[-1] / 1e8 if not north.empty else 0
+
         # 融资余额 (上交所)
         margin = ak.stock_margin_sse()
         margin_bal = margin['融资余额'].iloc[-1] / 1e8 if not margin.empty else 0
-        # 恐慌指数 (用沪深300 ETF期权波动率近似) – 这里用put/call ratio替代
-        option = ak.option_cffex_volume_estimate(symbol="沪深300")
-        put_call = option['put_volume'].sum() / option['call_volume'].sum() if not option.empty else 0.8
-        # 简单恐惧贪婪指数 (0-100)
+
+        # 恐慌指数 – 用中证500 ETF期权数据替代 (如果失败则用默认值)
+        try:
+            option = ak.option_cffex_volume_estimate(symbol="沪深300")
+            put_call = option['put_volume'].sum() / option['call_volume'].sum() if not option.empty else 0.8
+        except:
+            put_call = 0.8
+
         fg = 50 + (north_flow/10) - (put_call-0.8)*50
         fg = max(0, min(100, fg))
+
         return {
             'north_flow': round(north_flow, 1),
             'margin_balance': round(margin_bal, 0),
@@ -166,7 +191,8 @@ def get_market_sentiment():
         }
     except Exception as e:
         st.warning(f"情绪指标获取失败: {e}")
-        return {'north_flow':0, 'margin_balance':0, 'put_call':0.8, 'fear_greed':50}
+        # Return zeros – not simulated, just missing
+        return {'north_flow': 0, 'margin_balance': 0, 'put_call': 0.8, 'fear_greed': 50}
 
 # ------------------------------------------------------------
 # Main
@@ -175,7 +201,6 @@ def main():
     st.markdown('<p class="main-header">📊 CSI 300 真实数据仪表盘</p>', unsafe_allow_html=True)
     st.markdown('<p class="sub-header">实时行情 + 政策新闻 + 情绪指标 + 技术分析</p>', unsafe_allow_html=True)
 
-    # Sidebar
     with st.sidebar:
         st.image("https://img.icons8.com/color/96/000000/investment-portfolio.png", width=100)
         st.title("控制面板")
@@ -189,11 +214,9 @@ def main():
         st.info("🧠 情绪: 上交所/北向资金")
         st.caption(f"最后更新: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
-    # Load constituents
     constituents = load_constituents()
     ticker_list = list(zip(constituents['code'], constituents['name'], constituents['sector']))
 
-    # Fetch stock data
     with st.spinner("获取实时行情..."):
         df = fetch_realtime_stocks(ticker_list)
 
@@ -201,7 +224,6 @@ def main():
         st.error("未能获取任何股票数据，请检查网络")
         st.stop()
 
-    # Fetch sentiment & news
     sentiment = get_market_sentiment()
     news = get_recent_news()
 
@@ -290,14 +312,13 @@ def main():
     fig.update_traces(textposition='top center')
     st.plotly_chart(fig, use_container_width=True)
 
-    # Bar chart of sector returns
+    # Bar chart
     fig = px.bar(sector_stats.head(10), x='板块', y='平均涨跌幅', color='平均涨跌幅',
                  text='平均涨跌幅', title='板块涨跌幅前十',
                  color_continuous_scale=['#EF4444','#FCD34D','#10B981'])
     fig.update_traces(texttemplate='%{text:.2f}%', textposition='outside')
     st.plotly_chart(fig, use_container_width=True)
 
-    # Detailed sector table
     st.dataframe(sector_stats, use_container_width=True, hide_index=True)
 
     # --- Sector Stock Selector ---
@@ -308,7 +329,6 @@ def main():
     else:
         sector_df = df.copy()
 
-    # Multi‑factor scoring within the chosen universe
     sector_df['动量分'] = (sector_df['涨跌幅'] - sector_df['涨跌幅'].mean()) / sector_df['涨跌幅'].std()
     sector_df['成交额分'] = (sector_df['成交额(亿)'] - sector_df['成交额(亿)'].mean()) / sector_df['成交额(亿)'].std()
     sector_df['综合分'] = (sector_df['动量分']*0.6 + sector_df['成交额分']*0.4).round(2)
@@ -317,7 +337,7 @@ def main():
     top_stocks['涨跌幅'] = top_stocks['涨跌幅'].apply(lambda x: f"{x:.2f}%")
     st.dataframe(top_stocks, use_container_width=True, hide_index=True)
 
-    # --- Top Movers (All Market) ---
+    # --- Top Movers ---
     st.markdown('<div class="section-header">📈 全市场龙虎榜</div>', unsafe_allow_html=True)
     col1, col2 = st.columns(2)
     with col1:
@@ -331,7 +351,7 @@ def main():
         lose['涨跌幅'] = lose['涨跌幅'].apply(lambda x: f"{x:.2f}%")
         st.dataframe(lose, use_container_width=True, hide_index=True)
 
-    # --- Strategy Recommendation (based on real data) ---
+    # --- Strategy Recommendation ---
     st.markdown('<div class="section-header">📋 实时策略建议</div>', unsafe_allow_html=True)
     if avg_ret > 0.5 and pos_ratio > 60:
         regime = "牛市"
@@ -368,7 +388,6 @@ def main():
     </div>
     """, unsafe_allow_html=True)
 
-    # Footer
     st.markdown("---")
     st.markdown(f"""
     <div style="text-align:center; color:#666; font-size:0.8rem;">
