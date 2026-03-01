@@ -9,28 +9,17 @@ from datetime import datetime, timedelta
 import time
 import requests
 import json
-import random
-
-# Check for required packages and install if needed
-try:
-    from textblob import TextBlob
-    TEXTBLOB_AVAILABLE = True
-except ImportError:
-    TEXTBLOB_AVAILABLE = False
-    st.warning("TextBlob not installed. Using basic sentiment analysis.")
 
 # Attempt to import akshare
 try:
     import akshare as ak
-    AKSHARE_AVAILABLE = True
 except ImportError:
-    AKSHARE_AVAILABLE = False
     st.error("请先安装 akshare：pip install akshare")
     st.stop()
 
-st.set_page_config(layout="wide", page_title="CSI 300 Hedge Fund Dashboard", page_icon="📊")
+st.set_page_config(layout="wide", page_title="CSI 300 Real Data Dashboard", page_icon="📊")
 
-# Custom CSS for hedge fund look
+# Custom CSS for better visibility
 st.markdown("""
 <style>
     .main-header {
@@ -58,6 +47,7 @@ st.markdown("""
         padding: 1rem;
         border-radius: 10px;
         border-left: 4px solid #F59E0B;
+        color: #000000;
     }
     .signal-green {
         color: #10B981;
@@ -88,744 +78,466 @@ st.markdown("""
         margin: 2rem 0 1rem 0;
     }
     .insight-box {
-        background-color: #f8f9fa;
+        background-color: #f0f2f6;
         padding: 1rem;
         border-radius: 10px;
         border-left: 4px solid #4F46E5;
         margin: 1rem 0;
+        color: #000000;
+        font-size: 1rem;
+    }
+    .strategy-box {
+        background-color: #f8f9fa;
+        padding: 1.5rem;
+        border-radius: 10px;
+        border: 1px solid #e5e7eb;
+        margin: 1rem 0;
+        color: #000000;
+    }
+    .metric-label {
+        color: #4B5563;
+        font-size: 0.9rem;
+    }
+    .metric-value {
+        color: #111827;
+        font-size: 1.2rem;
+        font-weight: 600;
+    }
+    .stAlert {
+        color: #000000;
+    }
+    p, li, span, div {
+        color: #000000;
+    }
+    .stMarkdown {
+        color: #000000;
     }
 </style>
 """, unsafe_allow_html=True)
 
 # ------------------------------------------------------------
-# Advanced Data Collection Functions with Robust Error Handling
+# Real Data Collection Functions
 # ------------------------------------------------------------
-class HedgeFundDataCollector:
-    """Sophisticated data collector for hedge fund analysis with fallback mechanisms"""
-    
-    @staticmethod
-    @st.cache_data(ttl=3600)
-    def get_macro_indicators():
-        """Collect key macroeconomic indicators with fallback"""
-        macro_data = {
-            'gdp': [],
-            'cpi': [],
-            'pmi': [],
-            'm2': [],
-            'timestamp': datetime.now()
-        }
-        
-        try:
-            # Try to get real GDP data
-            if AKSHARE_AVAILABLE:
-                try:
-                    gdp_data = ak.macro_china_gdp_yearly()
-                    if not gdp_data.empty and '国内生产总值' in gdp_data.columns:
-                        macro_data['gdp'] = gdp_data['国内生产总值'].tail(5).tolist()
-                except:
-                    pass
-                
-                try:
-                    cpi_data = ak.macro_china_cpi_yearly()
-                    if not cpi_data.empty and 'cpi' in cpi_data.columns:
-                        macro_data['cpi'] = cpi_data['cpi'].tail(5).tolist()
-                except:
-                    pass
-                
-                try:
-                    pmi_data = ak.macro_china_pmi_yearly()
-                    if not pmi_data.empty and 'pmi' in pmi_data.columns:
-                        macro_data['pmi'] = pmi_data['pmi'].tail(5).tolist()
-                except:
-                    pass
-                
-                try:
-                    m2_data = ak.macro_china_money_supply_yearly()
-                    if not m2_data.empty and 'm2' in m2_data.columns:
-                        macro_data['m2'] = m2_data['m2'].tail(5).tolist()
-                except:
-                    pass
-        except Exception as e:
-            st.warning(f"宏观数据获取异常，使用模拟数据")
-        
-        # Fill missing data with realistic simulated values
-        if not macro_data['gdp']:
-            macro_data['gdp'] = [4.8, 5.0, 5.2, 4.9, 5.1]  # GDP growth %
-        if not macro_data['cpi']:
-            macro_data['cpi'] = [2.1, 2.2, 2.0, 2.3, 2.1]  # CPI inflation %
-        if not macro_data['pmi']:
-            macro_data['pmi'] = [50.1, 50.3, 49.8, 50.2, 50.4]  # PMI index
-        if not macro_data['m2']:
-            macro_data['m2'] = [9.8, 10.2, 10.5, 10.1, 10.3]  # M2 growth %
-        
-        return macro_data
+class RealDataCollector:
+    """Collect REAL market data from multiple sources"""
     
     @staticmethod
     @st.cache_data(ttl=1800)
-    def get_policy_news():
-        """Fetch China policy news with sentiment analysis"""
-        # Simulated policy news with realistic scenarios
-        news_items = [
-            {"title": "中国人民银行宣布下调存款准备金率0.5个百分点", "time": "09:30", "source": "中国人民银行", "sentiment": 0.9},
-            {"title": "国务院常务会议：进一步优化房地产政策", "time": "Yesterday", "source": "国务院", "sentiment": 0.6},
-            {"title": "证监会：加强程序化交易监管", "time": "Yesterday", "source": "证监会", "sentiment": -0.1},
-            {"title": "工信部：推动人工智能产业创新发展", "time": "Yesterday", "source": "工信部", "sentiment": 0.8},
-            {"title": "商务部：进一步放宽外资准入限制", "time": "2 days ago", "source": "商务部", "sentiment": 0.7},
-            {"title": "国家统计局：一季度GDP同比增长5.3%", "time": "3 days ago", "source": "国家统计局", "sentiment": 0.8},
-            {"title": "央行：保持流动性合理充裕", "time": "3 days ago", "source": "中国人民银行", "sentiment": 0.5},
-            {"title": "财政部：加大减税降费力度", "time": "4 days ago", "source": "财政部", "sentiment": 0.7},
-            {"title": "发改委：支持民营企业参与国家重大工程", "time": "4 days ago", "source": "发改委", "sentiment": 0.8},
-            {"title": "证监会：鼓励上市公司分红", "time": "5 days ago", "source": "证监会", "sentiment": 0.6},
-        ]
-        
-        # Add sentiment analysis if TextBlob is available
-        if TEXTBLOB_AVAILABLE:
-            for item in news_items:
-                blob = TextBlob(item['title'])
-                item['sentiment'] = blob.sentiment.polarity
-        
-        return news_items
+    def get_realtime_market_data():
+        """获取实时市场数据"""
+        try:
+            # Get real-time quotes for all A-shares
+            df = ak.stock_zh_a_spot_em()
+            if not df.empty:
+                return df
+        except Exception as e:
+            st.error(f"实时数据获取失败: {e}")
+            return pd.DataFrame()
     
     @staticmethod
-    @st.cache_data(ttl=300)
-    def get_market_sentiment():
-        """Calculate market sentiment indicators with realistic values"""
-        # Generate realistic sentiment indicators based on market conditions
-        # These simulate real market data with daily variations
-        
-        # Use current timestamp to create deterministic but varying values
-        current_hour = datetime.now().hour
-        current_day = datetime.now().day
-        
-        # Base values that change slightly each day
-        base_fear_greed = 50 + (current_day % 30)  # 50-80 range
-        base_north_flow = (current_day % 100) - 30  # -30 to 70 range
-        base_volatility = 15 + (current_hour % 10)  # 15-25 range
-        
-        return {
-            'north_flow': round(base_north_flow, 1),  # 北向资金 (亿)
-            'margin_balance': round(9000 + (current_day % 1000), 0),  # 融资余额 (亿)
-            'volatility': round(base_volatility, 1),  # 波动率指数
-            'put_call_ratio': round(0.7 + (current_hour % 50)/100, 2),  # Put/Call ratio
-            'fear_greed_index': round(base_fear_greed, 0),  # 恐惧贪婪指数 0-100
-            'turnover_rate': round(1.2 + (current_day % 30)/100, 2),  # 换手率
-            'advance_decline_ratio': round(0.8 + (current_hour % 40)/100, 2)  # 涨跌比
-        }
+    @st.cache_data(ttl=3600)
+    def get_north_flow():
+        """获取北向资金数据"""
+        try:
+            df = ak.stock_hsgt_north_net_flow_in_em(symbol="北上")
+            if not df.empty:
+                return df
+        except:
+            pass
+        return pd.DataFrame()
+    
+    @staticmethod
+    @st.cache_data(ttl=3600)
+    def get_margin_data():
+        """获取融资融券数据"""
+        try:
+            df = ak.stock_margin_sse()
+            if not df.empty:
+                return df
+        except:
+            pass
+        return pd.DataFrame()
     
     @staticmethod
     @st.cache_data(ttl=86400)
     def get_csi300_constituents():
-        """获取沪深300成分股 with multiple fallback options"""
-        # Comprehensive list of major CSI300 constituents
-        constituents_data = {
-            '成分券代码': [
-                '600519', '000858', '000333', '002415', '000651', '002594', 
-                '300750', '601318', '600036', '000568', '002475', '300059',
-                '600900', '000725', '002714', '300760', '601888', '603288',
-                '000001', '000002', '600030', '601166', '600016', '601398',
-                '600887', '002304', '000625', '002230', '300124', '002179'
-            ],
-            '成分券名称': [
-                '贵州茅台', '五粮液', '美的集团', '海康威视', '格力电器', '比亚迪',
-                '宁德时代', '中国平安', '招商银行', '泸州老窖', '立讯精密', '东方财富',
-                '长江电力', '京东方A', '牧原股份', '迈瑞医疗', '中国中免', '海天味业',
-                '平安银行', '万科A', '中信证券', '兴业银行', '民生银行', '工商银行',
-                '伊利股份', '洋河股份', '长安汽车', '科大讯飞', '汇川技术', '中航光电'
+        """获取沪深300成分股"""
+        try:
+            # Try multiple sources
+            sources = [
+                lambda: ak.index_stock_cons_csindex("000300"),
+                lambda: ak.index_stock_cons(symbol="000300")
             ]
-        }
+            
+            for source in sources:
+                try:
+                    df = source()
+                    if df is not None and not df.empty:
+                        return df
+                except:
+                    continue
+        except:
+            pass
         
-        return pd.DataFrame(constituents_data)
+        st.error("无法获取沪深300成分股数据")
+        return pd.DataFrame()
     
     @staticmethod
-    def get_industry_sector(code):
-        """Map stock code to industry sector"""
-        sector_mapping = {
-            '600519': '消费', '000858': '消费', '000333': '家电', '002415': '科技',
-            '000651': '家电', '002594': '新能源', '300750': '新能源', '601318': '金融',
-            '600036': '金融', '000568': '消费', '002475': '科技', '300059': '金融',
-            '600900': '公用事业', '000725': '科技', '002714': '农业', '300760': '医药',
-            '601888': '消费', '603288': '消费', '000001': '金融', '000002': '地产',
-            '600030': '金融', '601166': '金融', '600016': '金融', '601398': '金融',
-            '600887': '消费', '002304': '消费', '000625': '汽车', '002230': '科技',
-            '300124': '科技', '002179': '科技'
-        }
-        
-        # Default sector based on code prefix if not found
-        if code not in sector_mapping:
-            prefix = code[:3]
-            if prefix in ['600', '601', '603']:
-                return '制造业'
-            elif prefix in ['000', '001']:
-                return '主板'
-            elif prefix == '002':
-                return '中小板'
-            elif prefix == '300':
-                return '创业板'
-            else:
-                return '其他'
-        
-        return sector_mapping.get(code, '其他')
-
-# ------------------------------------------------------------
-# Advanced Analysis Engine
-# ------------------------------------------------------------
-class HedgeFundAnalyzer:
-    """Advanced analytics for hedge fund decision making"""
-    
-    @staticmethod
-    def generate_market_data(constituents_df):
-        """Generate realistic market data with sector correlations"""
-        stocks = []
-        
-        # Sector performance trends (some sectors outperform others)
-        sector_trends = {
-            '消费': 0.8, '科技': 1.2, '金融': 0.2, '新能源': 2.0, 
-            '医药': 0.5, '家电': 0.6, '汽车': 0.3, '农业': -0.1,
-            '公用事业': -0.2, '地产': -0.5, '制造业': 0.1, '其他': 0.0
-        }
-        
-        for idx, row in constituents_df.iterrows():
-            code = str(row['成分券代码']).strip()
-            name = str(row['成分券名称']).strip()
-            
-            # Get sector
-            sector = HedgeFundDataCollector.get_industry_sector(code)
-            
-            # Generate realistic price change based on sector trend and random noise
-            sector_trend = sector_trends.get(sector, 0)
-            
-            # Market-wide factor (correlates stocks)
-            market_factor = np.random.normal(0.3, 1.0)
-            
-            # Stock-specific factor
-            specific_factor = np.random.normal(0, 2.0)
-            
-            # Calculate final price change
-            pct_chg = round(sector_trend * 0.5 + market_factor * 0.3 + specific_factor * 0.2, 2)
-            
-            # Generate volume (correlated with price movement)
-            volume_base = np.random.uniform(5e8, 3e9)
-            volume = volume_base * (1 + abs(pct_chg) / 20)
-            
-            # Generate fundamental data
-            pe = round(np.random.uniform(15, 35) if sector not in ['金融', '公用事业'] else np.random.uniform(6, 12), 2)
-            pb = round(np.random.uniform(1.2, 4.5), 2)
-            roe = round(np.random.uniform(8, 25), 2)
-            
-            stocks.append({
-                '代码': code,
-                '名称': name,
-                '板块': sector,
-                '涨跌幅': pct_chg,
-                '成交量': volume,
-                '成交额(亿)': round(volume / 1e8, 2),
-                'PE': pe,
-                'PB': pb,
-                'ROE': roe,
-                '市值(亿)': round(np.random.uniform(500, 20000), 0)
-            })
-        
-        return pd.DataFrame(stocks)
-    
-    @staticmethod
-    def calculate_sector_rotation(df):
-        """Analyze sector rotation patterns"""
-        sector_performance = df.groupby('板块').agg({
-            '涨跌幅': ['mean', 'std'],
-            '成交量': 'sum',
-            '代码': 'count'
-        }).round(2)
-        
-        sector_performance.columns = ['平均涨跌幅', '波动率', '成交额', '数量']
-        sector_performance = sector_performance.reset_index()
-        sector_performance['成交额(亿)'] = (sector_performance['成交额'] / 1e8).round(0)
-        sector_performance['强度'] = (
-            sector_performance['平均涨跌幅'] * 0.5 + 
-            (sector_performance['成交额(亿)'] / sector_performance['成交额(亿)'].max()) * 0.3 +
-            (sector_performance['数量'] / sector_performance['数量'].max()) * 0.2
-        )
-        
-        return sector_performance.sort_values('强度', ascending=False)
-    
-    @staticmethod
-    def generate_trading_signals(df, sentiment):
-        """Generate trading signals based on multiple factors"""
-        signals = {}
-        
-        # Calculate sector performance
-        sector_perf = df.groupby('板块')['涨跌幅'].mean().to_dict()
-        
-        for sector in df['板块'].unique():
-            # Factor 1: Price momentum
-            momentum_score = sector_perf.get(sector, 0) * 10
-            
-            # Factor 2: Volume momentum
-            sector_volume = df[df['板块'] == sector]['成交量'].sum()
-            volume_score = np.log1p(sector_volume / 1e8)
-            
-            # Factor 3: Market sentiment
-            sentiment_score = (sentiment['fear_greed_index'] - 50) / 10
-            
-            # Factor 4: Sector-specific
-            sector_score = 0
-            if sector in ['科技', '新能源']:
-                sector_score = 2
-            elif sector in ['消费', '医药']:
-                sector_score = 1
-            elif sector in ['地产', '金融']:
-                sector_score = -1
-            
-            # Composite signal
-            composite = (momentum_score * 0.3 + volume_score * 0.2 + 
-                        sentiment_score * 0.3 + sector_score * 0.2)
-            
-            # Convert to signal
-            if composite > 2:
-                signals[sector] = 'STRONG_BUY'
-            elif composite > 0.5:
-                signals[sector] = 'BUY'
-            elif composite > -0.5:
-                signals[sector] = 'HOLD'
-            elif composite > -2:
-                signals[sector] = 'SELL'
-            else:
-                signals[sector] = 'STRONG_SELL'
-        
-        return signals
-    
-    @staticmethod
-    def calculate_risk_metrics(df):
-        """Calculate portfolio risk metrics"""
-        returns = df['涨跌幅'].values
-        
-        risk_metrics = {
-            'VaR_95': round(np.percentile(returns, 5), 2),
-            'CVaR_95': round(returns[returns <= np.percentile(returns, 5)].mean(), 2),
-            'volatility': round(np.std(returns), 2),
-            'sharpe': round(np.mean(returns) / np.std(returns) if np.std(returns) > 0 else 0, 2),
-            'max_drawdown': round(np.min(returns), 2),
-            'positive_ratio': round(len(returns[returns > 0]) / len(returns) * 100, 1)
-        }
-        
-        return risk_metrics
+    @st.cache_data(ttl=3600)
+    def get_stock_quote(code):
+        """获取单只股票实时行情"""
+        try:
+            df = ak.stock_zh_a_hist(symbol=code, period="daily", 
+                                   start_date=(datetime.now() - timedelta(days=5)).strftime('%Y%m%d'),
+                                   end_date=datetime.now().strftime('%Y%m%d'),
+                                   adjust="qfq")
+            if not df.empty:
+                return df.iloc[-1]
+        except:
+            pass
+        return None
 
 # ------------------------------------------------------------
 # Main Dashboard
 # ------------------------------------------------------------
 def main():
     # Header
-    st.markdown('<p class="main-header">📊 CSI 300 Hedge Fund Dashboard</p>', unsafe_allow_html=True)
-    st.markdown('<p class="sub-header">Advanced Market Intelligence & Quantitative Analysis</p>', unsafe_allow_html=True)
-    st.markdown('<div style="text-align: center;"><span class="hedge-fund-badge">Institutional Grade Analytics</span></div>', unsafe_allow_html=True)
+    st.markdown('<p class="main-header">📊 CSI 300 Real-Time Trading Dashboard</p>', unsafe_allow_html=True)
+    st.markdown('<p class="sub-header">基于真实市场数据的量化分析系统</p>', unsafe_allow_html=True)
     
-    # Initialize data collector and analyzer
-    collector = HedgeFundDataCollector()
-    analyzer = HedgeFundAnalyzer()
+    collector = RealDataCollector()
     
-    # Sidebar - Risk Parameters
+    # Sidebar
     with st.sidebar:
         st.image("https://img.icons8.com/color/96/000000/investment-portfolio.png", width=100)
-        st.title("Risk Management")
+        st.title("控制面板")
         
-        # Risk parameters
-        st.subheader("Portfolio Settings")
-        risk_tolerance = st.select_slider(
-            "Risk Tolerance",
-            options=['Conservative', 'Moderate', 'Aggressive'],
-            value='Moderate'
-        )
-        
-        max_position_size = st.slider("Max Position Size (%)", 1, 20, 5)
-        stop_loss = st.slider("Stop Loss (%)", 1, 10, 5)
-        take_profit = st.slider("Take Profit (%)", 5, 30, 15)
-        
-        st.subheader("Strategy Parameters")
-        enable_macro = st.checkbox("Macro Factors", value=True)
-        enable_technical = st.checkbox("Technical Analysis", value=True)
-        enable_sentiment = st.checkbox("Sentiment Analysis", value=True)
-        
-        if st.button("🔄 Refresh Data"):
+        if st.button("🔄 刷新实时数据", type="primary"):
             st.cache_data.clear()
             st.rerun()
+        
+        st.markdown("---")
+        st.markdown("### 数据状态")
+        st.info("📡 实时数据源: AkShare")
     
-    # Load data with progress
-    with st.spinner("Loading market data..."):
-        # Get constituents
+    # Load real data
+    with st.spinner("正在获取实时市场数据..."):
+        # Get CSI300 constituents
         constituents_df = collector.get_csi300_constituents()
         
-        # Generate market data
-        df = analyzer.generate_market_data(constituents_df)
+        if constituents_df.empty:
+            st.error("无法获取成分股数据，请检查网络连接")
+            st.stop()
         
-        # Get macro data
-        macro_data = collector.get_macro_indicators()
+        # Display column info for debugging
+        with st.expander("数据源信息"):
+            st.write("找到以下数据列:", constituents_df.columns.tolist())
         
-        # Get policy news
-        policy_news = collector.get_policy_news()
+        # Identify code and name columns
+        code_col = None
+        name_col = None
         
-        # Get market sentiment
-        sentiment = collector.get_market_sentiment()
+        for col in constituents_df.columns:
+            if '代码' in col or 'code' in col.lower():
+                code_col = col
+            if '名称' in col or 'name' in col.lower():
+                name_col = col
         
-        # Calculate sector performance
-        sector_performance = analyzer.calculate_sector_rotation(df)
+        if not code_col:
+            code_col = constituents_df.columns[0]
+        if not name_col:
+            name_col = constituents_df.columns[1] if len(constituents_df.columns) > 1 else constituents_df.columns[0]
         
-        # Generate trading signals
-        signals = analyzer.generate_trading_signals(df, sentiment)
+        # Get real market data
+        market_data = collector.get_realtime_market_data()
         
-        # Calculate risk metrics
-        risk_metrics = analyzer.calculate_risk_metrics(df)
+        # Get north flow data
+        north_flow_df = collector.get_north_flow()
+        north_flow_value = north_flow_df['value'].iloc[-1] / 1e8 if not north_flow_df.empty else 0
+        
+        # Get margin data
+        margin_df = collector.get_margin_data()
+        margin_value = margin_df['融资余额'].iloc[-1] / 1e8 if not margin_df.empty else 0
+        
+        # Process stock data
+        stocks = []
+        total_stocks = min(50, len(constituents_df))  # Limit to 50 for performance
+        
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        for idx, row in constituents_df.head(total_stocks).iterrows():
+            status_text.text(f"正在获取 {idx+1}/{total_stocks} 只股票数据...")
+            
+            code = str(row[code_col]).strip()
+            name = str(row[name_col]).strip()
+            
+            # Clean code
+            code = ''.join(filter(str.isdigit, code))
+            if len(code) < 6:
+                code = code.zfill(6)
+            
+            # Get real quote
+            quote = collector.get_stock_quote(code)
+            
+            if quote is not None:
+                stocks.append({
+                    '代码': code,
+                    '名称': name,
+                    '最新价': quote['收盘'],
+                    '涨跌幅': quote['涨跌幅'],
+                    '成交量': quote['成交量'],
+                    '成交额': quote['成交额'],
+                    '最高': quote['最高'],
+                    '最低': quote['最低'],
+                    '开盘': quote['开盘']
+                })
+            
+            progress_bar.progress((idx + 1) / total_stocks)
+        
+        status_text.text("数据加载完成!")
+        time.sleep(0.5)
+        status_text.empty()
+        progress_bar.empty()
+        
+        if not stocks:
+            st.error("无法获取任何股票实时数据")
+            st.stop()
+        
+        df = pd.DataFrame(stocks)
+        
+        # Add sector information based on real industry classification
+        def get_sector(code):
+            try:
+                info = ak.stock_individual_info_em(symbol=code)
+                if not info.empty:
+                    sector_row = info[info['item'] == '行业']
+                    if not sector_row.empty:
+                        return sector_row['value'].iloc[0]
+            except:
+                pass
+            
+            # Fallback to code-based classification
+            code_prefix = code[:3]
+            sector_map = {
+                '600': '制造业', '601': '金融', '603': '制造业',
+                '000': '综合', '001': '综合', '002': '中小板',
+                '300': '创业板', '688': '科创板'
+            }
+            return sector_map.get(code_prefix, '其他')
+        
+        df['板块'] = df['代码'].apply(get_sector)
+        df['成交额(亿)'] = (df['成交额'] / 1e8).round(2)
     
-    # Key Metrics Row
+    # Key Metrics
     st.markdown("---")
     col1, col2, col3, col4, col5 = st.columns(5)
     
     with col1:
-        delta_color = "normal" if sentiment['fear_greed_index'] > 50 else "inverse"
+        avg_change = df['涨跌幅'].mean()
         st.metric(
-            "恐惧贪婪指数",
-            f"{sentiment['fear_greed_index']:.0f}",
-            delta=f"{sentiment['fear_greed_index'] - 50:.0f}",
-            delta_color="off"
+            "平均涨跌幅",
+            f"{avg_change:.2f}%",
+            delta=f"{avg_change:.2f}%"
         )
     
     with col2:
-        north_flow = sentiment['north_flow']
+        positive_pct = (len(df[df['涨跌幅'] > 0]) / len(df)) * 100
         st.metric(
-            "北向资金 (亿)",
-            f"{north_flow:.1f}",
-            delta=f"{north_flow:.1f}",
-            delta_color="normal" if north_flow > 0 else "inverse"
+            "上涨比例",
+            f"{positive_pct:.1f}%",
+            delta=f"{positive_pct - 50:.1f}%"
         )
     
     with col3:
         st.metric(
-            "融资余额 (亿)",
-            f"{sentiment['margin_balance']:.0f}",
-            delta=f"{sentiment['margin_balance'] - 9000:.0f}"
+            "北向资金 (亿)",
+            f"{north_flow_value:.1f}",
+            delta="流入" if north_flow_value > 0 else "流出"
         )
     
     with col4:
         st.metric(
-            "波动率指数",
-            f"{sentiment['volatility']:.1f}",
-            delta=f"{sentiment['volatility'] - 20:.1f}",
-            delta_color="inverse"
+            "融资余额 (亿)",
+            f"{margin_value:.0f}"
         )
     
     with col5:
+        total_volume = df['成交额'].sum() / 1e8
         st.metric(
-            "上涨比例",
-            f"{risk_metrics['positive_ratio']:.1f}%",
-            delta=f"{risk_metrics['positive_ratio'] - 50:.1f}%"
+            "总成交额 (亿)",
+            f"{total_volume:.0f}"
         )
     
-    # Market Insight Box
+    # Market Insight Box - Fixed visibility
     st.markdown(f"""
     <div class="insight-box">
-        <strong>📊 Market Insight</strong><br>
-        市场情绪: {'贪婪' if sentiment['fear_greed_index'] > 60 else '恐惧' if sentiment['fear_greed_index'] < 40 else '中性'} |
-        北向资金: {'净流入' if sentiment['north_flow'] > 0 else '净流出'} |
-        强势板块: {sector_performance.iloc[0]['板块'] if not sector_performance.empty else 'N/A'} (+{sector_performance.iloc[0]['平均涨跌幅'] if not sector_performance.empty else 0}%) |
-        波动风险: {'高' if risk_metrics['volatility'] > 2 else '中' if risk_metrics['volatility'] > 1 else '低'}
+        <strong>📊 市场洞察</strong><br>
+        <span style="color: #000000;">市场情绪: {'乐观' if avg_change > 0.5 else '谨慎' if avg_change > 0 else '悲观'}</span> |
+        <span style="color: #000000;">北向资金: {'净流入' if north_flow_value > 0 else '净流出'}</span> |
+        <span style="color: #000000;">强势板块: {df.groupby('板块')['涨跌幅'].mean().idxmax()} (+{df.groupby('板块')['涨跌幅'].mean().max():.2f}%)</span> |
+        <span style="color: #000000;">波动风险: {'高' if df['涨跌幅'].std() > 2 else '中' if df['涨跌幅'].std() > 1 else '低'}</span>
     </div>
     """, unsafe_allow_html=True)
     
-    # Macro Dashboard
-    st.markdown('<div class="section-header">📈 Macro Dashboard</div>', unsafe_allow_html=True)
+    # Sector Analysis
+    st.markdown('<div class="section-header">🏭 板块分析</div>', unsafe_allow_html=True)
+    
+    sector_perf = df.groupby('板块').agg({
+        '涨跌幅': ['mean', 'std', 'count'],
+        '成交额': 'sum'
+    }).round(2)
+    
+    sector_perf.columns = ['平均涨跌幅', '波动率', '数量', '成交额']
+    sector_perf = sector_perf.reset_index()
+    sector_perf['成交额(亿)'] = (sector_perf['成交额'] / 1e8).round(0)
+    sector_perf = sector_perf.sort_values('平均涨跌幅', ascending=False)
+    
+    # Sector performance chart
+    fig = px.bar(
+        sector_perf.head(10),
+        x='板块',
+        y='平均涨跌幅',
+        color='平均涨跌幅',
+        text='平均涨跌幅',
+        title='板块涨跌幅排行',
+        color_continuous_scale=['#EF4444', '#FCD34D', '#10B981'],
+        labels={'平均涨跌幅': '涨跌幅 (%)'}
+    )
+    fig.update_traces(texttemplate='%{text:.2f}%', textposition='outside')
+    fig.update_layout(height=400)
+    st.plotly_chart(fig, use_container_width=True)
+    
+    # Top Movers
+    st.markdown('<div class="section-header">📈 涨跌幅排名</div>', unsafe_allow_html=True)
     
     col1, col2 = st.columns(2)
     
     with col1:
-        # Macro indicators chart
-        fig = make_subplots(
-            rows=2, cols=2,
-            subplot_titles=('GDP增长率 (%)', 'CPI通胀率 (%)', 'PMI指数', 'M2增长率 (%)'),
-            vertical_spacing=0.15,
-            horizontal_spacing=0.15
-        )
-        
-        fig.add_trace(
-            go.Scatter(y=macro_data['gdp'], mode='lines+markers', 
-                      name='GDP', line=dict(color='#4F46E5', width=3)),
-            row=1, col=1
-        )
-        fig.add_trace(
-            go.Scatter(y=macro_data['cpi'], mode='lines+markers',
-                      name='CPI', line=dict(color='#EF4444', width=3)),
-            row=1, col=2
-        )
-        fig.add_trace(
-            go.Scatter(y=macro_data['pmi'], mode='lines+markers',
-                      name='PMI', line=dict(color='#10B981', width=3)),
-            row=2, col=1
-        )
-        fig.add_trace(
-            go.Scatter(y=macro_data['m2'], mode='lines+markers',
-                      name='M2', line=dict(color='#F59E0B', width=3)),
-            row=2, col=2
-        )
-        
-        fig.update_layout(height=400, showlegend=False, margin=dict(l=20, r=20, t=40, b=20))
-        fig.update_xaxes(title_text="季度", row=1, col=1)
-        fig.update_xaxes(title_text="季度", row=1, col=2)
-        fig.update_xaxes(title_text="季度", row=2, col=1)
-        fig.update_xaxes(title_text="季度", row=2, col=2)
-        
-        st.plotly_chart(fig, use_container_width=True)
+        st.subheader("涨幅前十")
+        gainers = df.nlargest(10, '涨跌幅')[['代码', '名称', '板块', '涨跌幅', '成交额(亿)']].copy()
+        gainers['涨跌幅'] = gainers['涨跌幅'].apply(lambda x: f"{x:.2f}%")
+        st.dataframe(gainers, use_container_width=True, hide_index=True)
     
     with col2:
-        # Policy news with sentiment
-        st.markdown("### 📰 政策新闻与情绪")
-        for news in policy_news[:8]:
-            # Determine sentiment icon
-            if news['sentiment'] > 0.2:
-                sentiment_icon = "🟢"
-                sentiment_text = "利好"
-            elif news['sentiment'] < -0.2:
-                sentiment_icon = "🔴"
-                sentiment_text = "利空"
-            else:
-                sentiment_icon = "🟡"
-                sentiment_text = "中性"
-            
-            st.markdown(f"""
-            <div style="padding: 0.5rem; border-bottom: 1px solid #e5e7eb;">
-                <div style="display: flex; align-items: center;">
-                    <span style="font-size: 1.2rem; margin-right: 0.5rem;">{sentiment_icon}</span>
-                    <span style="font-weight: 500;">{news['title']}</span>
-                </div>
-                <div style="margin-left: 1.8rem; color: #6b7280; font-size: 0.8rem;">
-                    {news['source']} • {news['time']} • 情绪: {sentiment_text}
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
+        st.subheader("跌幅前十")
+        losers = df.nsmallest(10, '涨跌幅')[['代码', '名称', '板块', '涨跌幅', '成交额(亿)']].copy()
+        losers['涨跌幅'] = losers['涨跌幅'].apply(lambda x: f"{x:.2f}%")
+        st.dataframe(losers, use_container_width=True, hide_index=True)
     
-    # Sector Analysis
-    st.markdown('<div class="section-header">🏭 Sector Rotation Analysis</div>', unsafe_allow_html=True)
+    # Volume Analysis
+    st.markdown('<div class="section-header">💰 资金流向</div>', unsafe_allow_html=True)
     
-    # Sector bubble chart
-    fig = px.scatter(
-        sector_performance,
-        x='平均涨跌幅',
-        y='成交额(亿)',
-        size='数量',
-        color='平均涨跌幅',
-        text='板块',
-        title='板块轮动分析 (气泡大小=成分股数量)',
-        color_continuous_scale='RdYlGn',
-        size_max=50,
-        hover_data=['波动率', '强度']
-    )
-    fig.update_traces(textposition='top center')
-    fig.update_layout(height=500, margin=dict(l=20, r=20, t=40, b=20))
-    st.plotly_chart(fig, use_container_width=True)
-    
-    # Sector table with signals
-    st.subheader("📊 板块信号与评级")
-    
-    sector_display = sector_performance[['板块', '平均涨跌幅', '成交额(亿)', '波动率', '强度']].copy()
-    sector_display['信号'] = sector_display['板块'].map(signals)
-    sector_display['平均涨跌幅'] = sector_display['平均涨跌幅'].apply(lambda x: f"{x:.2f}%")
-    
-    # Color code signals
-    def highlight_signals(val):
-        if val == 'STRONG_BUY':
-            return 'background-color: #10B981; color: white'
-        elif val == 'BUY':
-            return 'background-color: #6EE7B7'
-        elif val == 'HOLD':
-            return 'background-color: #FCD34D'
-        elif val == 'SELL':
-            return 'background-color: #FCA5A5'
-        elif val == 'STRONG_SELL':
-            return 'background-color: #EF4444; color: white'
-        return ''
-    
-    styled_df = sector_display.style.applymap(highlight_signals, subset=['信号'])
-    st.dataframe(styled_df, use_container_width=True)
-    
-    # Top Picks
-    st.markdown('<div class="section-header">🎯 Top Picks - Alpha Opportunities</div>', unsafe_allow_html=True)
-    
-    # Calculate alpha score
-    df['alpha_score'] = (
-        df['涨跌幅'] * 0.3 +
-        (df['ROE'] / df['ROE'].max()) * 0.3 +
-        (1 / df['PE'] * 20) * 0.2 +
-        (df['成交额(亿)'] / df['成交额(亿)'].max()) * 0.2
-    )
-    
-    top_picks = df.nlargest(10, 'alpha_score')[['代码', '名称', '板块', '涨跌幅', '成交额(亿)', 'PE', 'ROE', 'alpha_score']].copy()
-    top_picks['涨跌幅'] = top_picks['涨跌幅'].apply(lambda x: f"{x:.2f}%")
-    top_picks['alpha_score'] = top_picks['alpha_score'].round(2)
-    
-    col1, col2 = st.columns([2, 1])
+    col1, col2 = st.columns(2)
     
     with col1:
-        st.dataframe(top_picks, use_container_width=True, hide_index=True)
+        st.subheader("成交额前十")
+        volume_leaders = df.nlargest(10, '成交额')[['代码', '名称', '板块', '涨跌幅', '成交额(亿)']].copy()
+        volume_leaders['涨跌幅'] = volume_leaders['涨跌幅'].apply(lambda x: f"{x:.2f}%")
+        st.dataframe(volume_leaders, use_container_width=True, hide_index=True)
     
     with col2:
-        # Signal distribution
-        signal_counts = pd.Series(signals).value_counts()
+        # Sector volume distribution
+        sector_volume = df.groupby('板块')['成交额'].sum().sort_values(ascending=False).head(8)
         fig = px.pie(
-            values=signal_counts.values,
-            names=signal_counts.index,
-            title='板块信号分布',
-            color_discrete_map={
-                'STRONG_BUY': '#10B981',
-                'BUY': '#6EE7B7',
-                'HOLD': '#FCD34D',
-                'SELL': '#FCA5A5',
-                'STRONG_SELL': '#EF4444'
-            }
+            values=sector_volume.values,
+            names=sector_volume.index,
+            title="板块成交额分布",
+            hole=0.4
         )
         st.plotly_chart(fig, use_container_width=True)
     
-    # Risk Analytics
-    st.markdown('<div class="section-header">📋 Risk Analytics & Portfolio Construction</div>', unsafe_allow_html=True)
+    # Strategy Recommendations - Fixed visibility
+    st.markdown('<div class="section-header">🎯 策略建议</div>', unsafe_allow_html=True)
     
+    # Determine market state
+    avg_ret = df['涨跌幅'].mean()
+    positive_ratio = len(df[df['涨跌幅'] > 0]) / len(df)
+    volatility = df['涨跌幅'].std()
+    
+    if avg_ret > 0.5 and positive_ratio > 0.6:
+        market_state = "牛市"
+        state_color = "#10B981"
+    elif avg_ret < -0.5 and positive_ratio < 0.4:
+        market_state = "熊市"
+        state_color = "#EF4444"
+    elif volatility > 2:
+        market_state = "高波动市场"
+        state_color = "#F59E0B"
+    else:
+        market_state = "震荡市场"
+        state_color = "#4F46E5"
+    
+    # Generate strategy based on real data
+    if avg_ret > 0.5:
+        strategy = "逢低买入强势板块"
+        risk_level = "中等"
+    elif avg_ret < -0.5:
+        strategy = "控制仓位，等待企稳"
+        risk_level = "高"
+    else:
+        strategy = "均衡配置，精选个股"
+        risk_level = "中等"
+    
+    st.markdown(f"""
+    <div class="strategy-box">
+        <h3 style="color: #000000;">当前市场状态: <span style="color: {state_color}; font-weight: bold;">{market_state}</span></h3>
+        
+        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem; margin-top: 1rem;">
+            <div>
+                <div class="metric-label">建议仓位</div>
+                <div class="metric-value">{'70%' if avg_ret > 0.5 else '30%' if avg_ret < -0.5 else '50%'}</div>
+            </div>
+            <div>
+                <div class="metric-label">风险水平</div>
+                <div class="metric-value">{risk_level}</div>
+            </div>
+            <div>
+                <div class="metric-label">操作策略</div>
+                <div class="metric-value">{strategy}</div>
+            </div>
+        </div>
+        
+        <div style="margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid #e5e7eb;">
+            <p style="color: #000000;"><strong>重点关注板块:</strong> {', '.join(sector_perf.head(3)['板块'].tolist())}</p>
+            <p style="color: #000000;"><strong>建议规避板块:</strong> {', '.join(sector_perf.tail(3)['板块'].tolist())}</p>
+            <p style="color: #000000;"><strong>止损建议:</strong> 跌破5日均线减仓，跌破10日均线清仓</p>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # Stock Screener
+    st.markdown('<div class="section-header">🔍 实时选股</div>', unsafe_allow_html=True)
+    
+    # Filters
     col1, col2, col3 = st.columns(3)
-    
     with col1:
-        st.markdown("### 📊 Risk Metrics")
-        
-        # Risk gauge charts
-        def create_risk_gauge(value, title, max_val=5):
-            fig = go.Figure(go.Indicator(
-                mode="gauge+number",
-                value=min(abs(value), max_val),
-                title={'text': title},
-                gauge={
-                    'axis': {'range': [0, max_val]},
-                    'bar': {'color': "#4F46E5"},
-                    'steps': [
-                        {'range': [0, max_val/3], 'color': "#10B981"},
-                        {'range': [max_val/3, 2*max_val/3], 'color': "#FCD34D"},
-                        {'range': [2*max_val/3, max_val], 'color': "#EF4444"}
-                    ]
-                }
-            ))
-            fig.update_layout(height=150, margin=dict(l=10, r=10, t=40, b=10))
-            return fig
-        
-        col1_1, col1_2 = st.columns(2)
-        with col1_1:
-            st.plotly_chart(create_risk_gauge(risk_metrics['volatility'], '波动率', 3), use_container_width=True)
-            st.metric("VaR (95%)", f"{risk_metrics['VaR_95']}%")
-        with col1_2:
-            st.plotly_chart(create_risk_gauge(risk_metrics['sharpe']*2, '夏普比率', 2), use_container_width=True)
-            st.metric("最大回撤", f"{risk_metrics['max_drawdown']}%")
-    
+        min_change = st.slider("最小涨幅 (%)", -5.0, 5.0, -2.0, 0.5)
     with col2:
-        st.markdown("### 💼 组合配置建议")
-        
-        # Risk-based allocation
-        if risk_tolerance == 'Conservative':
-            allocation = {'防御性': 50, '周期性': 20, '成长性': 30}
-            beta = 0.8
-            cash = 30
-        elif risk_tolerance == 'Moderate':
-            allocation = {'防御性': 30, '周期性': 35, '成长性': 35}
-            beta = 1.0
-            cash = 20
-        else:
-            allocation = {'防御性': 20, '周期性': 30, '成长性': 50}
-            beta = 1.2
-            cash = 10
-        
-        fig = px.pie(
-            values=list(allocation.values()),
-            names=list(allocation.keys()),
-            title=f'{risk_tolerance} 组合配置',
-            color_discrete_sequence=px.colors.qualitative.Set3
-        )
-        st.plotly_chart(fig, use_container_width=True)
-        
-        st.markdown(f"""
-        **组合参数**:
-        - Beta: {beta}
-        - 现金仓位: {cash}%
-        - 建议杠杆: {'1.2x' if risk_tolerance == 'Aggressive' else '1.0x' if risk_tolerance == 'Moderate' else '0.8x'}
-        """)
-    
+        max_change = st.slider("最大涨幅 (%)", -5.0, 5.0, 2.0, 0.5)
     with col3:
-        st.markdown("### 🎯 止损止盈水平")
-        
-        # Generate stop loss levels based on volatility
-        for idx, row in top_picks.head(5).iterrows():
-            pct = float(row['涨跌幅'].replace('%', ''))
-            stop = pct - stop_loss
-            target = pct + take_profit
-            
-            st.markdown(f"""
-            <div style="margin: 0.5rem 0; padding: 0.5rem; background-color: #f8f9fa; border-radius: 5px;">
-                <span style="font-weight: 500;">{row['名称']}</span><br>
-                <span style="color: #EF4444;">止损: {stop:.1f}%</span> | 
-                <span style="color: #10B981;">目标: {target:.1f}%</span>
-            </div>
-            """, unsafe_allow_html=True)
+        sectors = ['全部'] + df['板块'].unique().tolist()
+        selected_sector = st.selectbox("选择板块", sectors)
     
-    # Market Summary
-    st.markdown('<div class="section-header">📝 市场总结与建议</div>', unsafe_allow_html=True)
+    # Apply filters
+    filtered_df = df[(df['涨跌幅'] >= min_change) & (df['涨跌幅'] <= max_change)]
+    if selected_sector != '全部':
+        filtered_df = filtered_df[filtered_df['板块'] == selected_sector]
     
-    # Generate comprehensive market summary
-    avg_return = df['涨跌幅'].mean()
-    best_sector = sector_performance.iloc[0]['板块'] if not sector_performance.empty else 'N/A'
-    worst_sector = sector_performance.iloc[-1]['板块'] if not sector_performance.empty else 'N/A'
-    
-    summary_col1, summary_col2 = st.columns(2)
-    
-    with summary_col1:
-        st.markdown(f"""
-        ### 市场概况
-        - **市场宽度**: {risk_metrics['positive_ratio']:.1f}% 股票上涨
-        - **平均收益**: {avg_return:.2f}%
-        - **最强板块**: {best_sector} ({sector_performance.iloc[0]['平均涨跌幅'] if not sector_performance.empty else 0}%)
-        - **最弱板块**: {worst_sector} ({sector_performance.iloc[-1]['平均涨跌幅'] if not sector_performance.empty else 0}%)
-        
-        ### 风险评级
-        - **波动率**: {risk_metrics['volatility']:.1f}% ({'高' if risk_metrics['volatility'] > 2 else '中' if risk_metrics['volatility'] > 1 else '低'})
-        - **市场情绪**: {'贪婪' if sentiment['fear_greed_index'] > 60 else '恐惧' if sentiment['fear_greed_index'] < 40 else '中性'}
-        - **北向资金**: {'净流入' if sentiment['north_flow'] > 0 else '净流出'} ({sentiment['north_flow']:.1f}亿)
-        """)
-    
-    with summary_col2:
-        # Determine market regime
-        if avg_return > 1 and risk_metrics['positive_ratio'] > 60:
-            regime = "牛市"
-            regime_color = "#10B981"
-        elif avg_return < -1 and risk_metrics['positive_ratio'] < 40:
-            regime = "熊市"
-            regime_color = "#EF4444"
-        elif abs(avg_return) < 0.5:
-            regime = "震荡市"
-            regime_color = "#F59E0B"
-        else:
-            regime = "结构性行情"
-            regime_color = "#4F46E5"
-        
-        st.markdown(f"""
-        ### 策略建议
-        
-        **当前市场状态**: <span style="color: {regime_color}; font-weight: bold;">{regime}</span>
-        
-        **基于{risk_tolerance}风险偏好**:
-        - 建议仓位: {100 - cash}%
-        - 重点配置: {', '.join([s for s, v in allocation.items() if v > 30])}
-        - 规避板块: {worst_sector}
-        
-        **操作策略**:
-        - {('逢低买入强势板块' if avg_return > 0 else '控制仓位，等待企稳')}
-        - {'关注政策受益板块' if sentiment['fear_greed_index'] < 40 else '避免追高' if sentiment['fear_greed_index'] > 70 else '均衡配置'}
-        - 止损位: -{stop_loss}%
-        - 止盈位: +{take_profit}%
-        """)
+    st.dataframe(
+        filtered_df[['代码', '名称', '板块', '最新价', '涨跌幅', '成交额(亿)']].sort_values('涨跌幅', ascending=False),
+        use_container_width=True,
+        hide_index=True
+    )
     
     # Footer
     st.markdown("---")
-    st.caption(f"""
-    ⚡ 机构级智能投研系统 v3.0 | 最后更新: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | 数据来源: AkShare, 宏观指标, 政策新闻
-    ⚠️ 本系统仅供机构内部使用，所有分析不构成投资建议。投资有风险，入市需谨慎。
-    """)
+    st.markdown(f"""
+    <div style="text-align: center; color: #6B7280; font-size: 0.8rem;">
+        ⚡ 实时数据系统 | 最后更新: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}<br>
+        ⚠️ 数据仅供参考，不构成投资建议
+    </div>
+    """, unsafe_allow_html=True)
 
 if __name__ == "__main__":
     main()
