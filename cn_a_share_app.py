@@ -121,7 +121,7 @@ def get_index_hist(ticker, period="6mo"):
 # Main
 # ------------------------------------------------------------
 def main():
-    st.markdown('<p class="main-header">📊 CSI 300 真实数据仪表盘</p>', unsafe_allow_html=True)
+    st.markdown('<p class="main-header">📊 CSI 800 + CSI 1000 真实数据仪表盘</p>', unsafe_allow_html=True)
     st.markdown('<p class="sub-header">实时行情 + 技术分析 + 多周期板块轮动</p>', unsafe_allow_html=True)
 
     with st.sidebar:
