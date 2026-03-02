@@ -8,17 +8,9 @@ from datetime import datetime, timedelta
 import yfinance as yf
 import time
 
-# Attempt to import akshare (required for news & sentiment)
-try:
-    import akshare as ak
-    AK_AVAILABLE = True
-except ImportError:
-    st.error("请安装 akshare >= 1.14.0：pip install akshare --upgrade")
-    st.stop()
-
 st.set_page_config(layout="wide", page_title="CSI 300 真实数据仪表盘", page_icon="📊")
 
-# Custom CSS (same as before)
+# Custom CSS
 st.markdown("""
 <style>
     .main-header { font-size: 2.5rem; color: #1E3A8A; font-weight: 800; text-align: center; }
@@ -45,7 +37,8 @@ def load_constituents():
 # ------------------------------------------------------------
 def code_to_yf(code):
     code = str(code).zfill(6)
-    return f"{code}.SS" if code.startswith(('6','5')) else f"{code}.SZ"
+    # Shanghai stocks usually start with 5 or 6, Shenzhen with 0,2,3
+    return f"{code}.SS" if code.startswith(('5','6')) else f"{code}.SZ"
 
 # ------------------------------------------------------------
 # Fetch real-time stock data (cached 15 min)
@@ -78,8 +71,8 @@ def fetch_realtime_stocks(ticker_list):
                     '最低': round(last['Low'], 2),
                     '开盘': round(last['Open'], 2),
                 })
-        except Exception as e:
-            # silently skip failed stocks
+        except Exception:
+            # skip failed stocks
             pass
         prog.progress((i+1)/total)
         time.sleep(0.1)
@@ -98,108 +91,18 @@ def get_index_hist(ticker, period="6mo"):
             return None
         df = df[['Close']].copy()
         df.columns = ['close']
-        for span in [20, 60, 120, 150]:
+        for span in [20, 60, 120, 250]:   # EMA 250 instead of 150
             df[f'EMA{span}'] = df['close'].ewm(span=span, adjust=False).mean()
         return df
     except:
         return None
 
 # ------------------------------------------------------------
-# Real news from East Money (policy‑related) – updated function
-# ------------------------------------------------------------
-@st.cache_data(ttl=1800)
-def get_recent_news():
-    try:
-        # Try the updated function name (as of akshare 1.14+)
-        news_df = ak.stock_news_mainland(symbol="政策")  # newer version
-        if news_df.empty:
-            # fallback to older function
-            news_df = ak.stock_news_em(symbol="政策")
-        if news_df.empty:
-            return []
-        news_df = news_df.head(20)
-        # Determine column names (may vary)
-        title_col = None
-        time_col = None
-        source_col = None
-        for col in news_df.columns:
-            if '标题' in col or 'title' in col.lower():
-                title_col = col
-            if '时间' in col or 'time' in col.lower() or '日期' in col:
-                time_col = col
-            if '来源' in col or 'source' in col.lower():
-                source_col = col
-        if not title_col:
-            return []  # can't proceed
-
-        # Simple sentiment rule
-        def simple_sentiment(title):
-            pos = ["利好", "提振", "支持", "推动", "放宽", "减税", "降息"]
-            neg = ["监管", "收紧", "处罚", "利空", "下跌", "风险"]
-            title = str(title).lower()
-            score = 0
-            for w in pos:
-                if w in title:
-                    score += 1
-            for w in neg:
-                if w in title:
-                    score -= 1
-            return max(-1, min(1, score / 5))
-
-        news_list = []
-        for _, row in news_df.iterrows():
-            news_list.append({
-                'title': row[title_col],
-                'time': row[time_col][5:16] if time_col and time_col in row else '未知',
-                'source': row[source_col] if source_col and source_col in row else '网络',
-                'sentiment': simple_sentiment(row[title_col])
-            })
-        return news_list
-    except Exception as e:
-        st.warning(f"新闻获取失败: {e}")
-        return []
-
-# ------------------------------------------------------------
-# Real market sentiment indicators (north flow, margin, etc.) – updated functions
-# ------------------------------------------------------------
-@st.cache_data(ttl=900)
-def get_market_sentiment():
-    try:
-        # 北向资金 (最新版 akshare)
-        north = ak.stock_hsgt_north_net_flow_in_em(symbol="北上")
-        north_flow = north['value'].iloc[-1] / 1e8 if not north.empty else 0
-
-        # 融资余额 (上交所)
-        margin = ak.stock_margin_sse()
-        margin_bal = margin['融资余额'].iloc[-1] / 1e8 if not margin.empty else 0
-
-        # 恐慌指数 – 用中证500 ETF期权数据替代 (如果失败则用默认值)
-        try:
-            option = ak.option_cffex_volume_estimate(symbol="沪深300")
-            put_call = option['put_volume'].sum() / option['call_volume'].sum() if not option.empty else 0.8
-        except:
-            put_call = 0.8
-
-        fg = 50 + (north_flow/10) - (put_call-0.8)*50
-        fg = max(0, min(100, fg))
-
-        return {
-            'north_flow': round(north_flow, 1),
-            'margin_balance': round(margin_bal, 0),
-            'put_call': round(put_call, 2),
-            'fear_greed': round(fg, 0)
-        }
-    except Exception as e:
-        st.warning(f"情绪指标获取失败: {e}")
-        # Return zeros – not simulated, just missing
-        return {'north_flow': 0, 'margin_balance': 0, 'put_call': 0.8, 'fear_greed': 50}
-
-# ------------------------------------------------------------
 # Main
 # ------------------------------------------------------------
 def main():
     st.markdown('<p class="main-header">📊 CSI 300 真实数据仪表盘</p>', unsafe_allow_html=True)
-    st.markdown('<p class="sub-header">实时行情 + 政策新闻 + 情绪指标 + 技术分析</p>', unsafe_allow_html=True)
+    st.markdown('<p class="sub-header">实时行情 + 技术分析 + 板块轮动</p>', unsafe_allow_html=True)
 
     with st.sidebar:
         st.image("https://img.icons8.com/color/96/000000/investment-portfolio.png", width=100)
@@ -210,9 +113,9 @@ def main():
         st.markdown("---")
         st.markdown("### 数据源")
         st.info("📈 股价: Yahoo Finance")
-        st.info("📰 新闻: 东方财富 (政策)")
-        st.info("🧠 情绪: 上交所/北向资金")
+        st.info("📊 成分股: 本地 CSV")
         st.caption(f"最后更新: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        st.warning("新闻与情绪数据暂不可用（无可靠免费API）")
 
     constituents = load_constituents()
     ticker_list = list(zip(constituents['code'], constituents['name'], constituents['sector']))
@@ -223,9 +126,6 @@ def main():
     if df.empty:
         st.error("未能获取任何股票数据，请检查网络")
         st.stop()
-
-    sentiment = get_market_sentiment()
-    news = get_recent_news()
 
     # --- Index charts with EMAs ---
     st.markdown("### 📈 主要指数技术分析")
@@ -241,9 +141,9 @@ def main():
             if hist_df is not None:
                 fig = go.Figure()
                 fig.add_trace(go.Scatter(x=hist_df.index, y=hist_df['close'], mode='lines', name='收盘价'))
-                for span in [20,60,120,150]:
+                for span in [20,60,120,250]:
                     fig.add_trace(go.Scatter(x=hist_df.index, y=hist_df[f'EMA{span}'], mode='lines', name=f'EMA{span}'))
-                fig.update_layout(height=500, title=f"{name} 日线图 (EMA 20/60/120/150)")
+                fig.update_layout(height=500, title=f"{name} 日线图 (EMA 20/60/120/250)")
                 st.plotly_chart(fig, use_container_width=True)
             else:
                 st.error(f"{name} 数据获取失败")
@@ -264,7 +164,9 @@ def main():
     with col4:
         st.metric("波动率", f"{vola:.2f}%")
     with col5:
-        st.metric("恐惧贪婪指数", sentiment['fear_greed'])
+        # Simple sentiment proxy based on breadth
+        breadth_sentiment = 50 + (pos_ratio - 50)
+        st.metric("市场宽度", f"{breadth_sentiment:.0f}")
 
     # --- Market Insight ---
     best_sector = df.groupby('板块')['涨跌幅'].mean().idxmax()
@@ -272,26 +174,11 @@ def main():
     st.markdown(f"""
     <div class="insight-box">
         <strong>📊 市场实时洞察</strong><br>
-        北向资金: {sentiment['north_flow']:.1f}亿 {'净流入' if sentiment['north_flow']>0 else '净流出'} |
-        融资余额: {sentiment['margin_balance']:.0f}亿 |
         强势板块: {best_sector} (+{best_ret:.2f}%) |
-        波动风险: {'高' if vola>2 else '中' if vola>1 else '低'}
+        波动风险: {'高' if vola>2 else '中' if vola>1 else '低'} |
+        上涨家数: {int(pos_ratio*len(df)/100)} / {len(df)}
     </div>
     """, unsafe_allow_html=True)
-
-    # --- Policy News ---
-    st.markdown('<div class="section-header">📰 实时政策新闻</div>', unsafe_allow_html=True)
-    if news:
-        for item in news[:8]:
-            icon = "🟢" if item['sentiment']>0.2 else "🔴" if item['sentiment']<-0.2 else "🟡"
-            st.markdown(f"""
-            <div style="padding:0.5rem; border-bottom:1px solid #eee;">
-                {icon} <strong>{item['title']}</strong><br>
-                <span style="color:#666;">{item['source']} · {item['time']}</span>
-            </div>
-            """, unsafe_allow_html=True)
-    else:
-        st.warning("暂无最新政策新闻")
 
     # --- Sector Analysis ---
     st.markdown('<div class="section-header">🏭 板块深度分析</div>', unsafe_allow_html=True)
@@ -329,6 +216,7 @@ def main():
     else:
         sector_df = df.copy()
 
+    # Multi‑factor scoring (momentum + volume)
     sector_df['动量分'] = (sector_df['涨跌幅'] - sector_df['涨跌幅'].mean()) / sector_df['涨跌幅'].std()
     sector_df['成交额分'] = (sector_df['成交额(亿)'] - sector_df['成交额(亿)'].mean()) / sector_df['成交额(亿)'].std()
     sector_df['综合分'] = (sector_df['动量分']*0.6 + sector_df['成交额分']*0.4).round(2)
@@ -391,7 +279,7 @@ def main():
     st.markdown("---")
     st.markdown(f"""
     <div style="text-align:center; color:#666; font-size:0.8rem;">
-        数据来源: Yahoo Finance, 东方财富, 上交所 | 更新: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+        数据来源: Yahoo Finance | 成分股列表: csi300_full.csv | 更新: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
     </div>
     """, unsafe_allow_html=True)
 
