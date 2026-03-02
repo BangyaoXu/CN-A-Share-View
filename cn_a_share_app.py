@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 import yfinance as yf
 import time
 
-st.set_page_config(layout="wide", page_title="CSI 800 + CSI 1000 Dashboard", page_icon="📊")
+st.set_page_config(layout="wide", page_title="CSI 800 + CSI 1000 Hedge Fund Dashboard", page_icon="📊")
 
 # Custom CSS
 st.markdown("""
@@ -117,7 +117,13 @@ def calculate_kdj(df, period=9, k_smooth=3, d_smooth=3):
     low_min = df['Low'].rolling(window=period).min()
     high_max = df['High'].rolling(window=period).max()
     
-    df['RSV'] = 100 * ((df['Close'] - low_min) / (high_max - low_min))
+    # Avoid division by zero
+    denominator = high_max - low_min
+    denominator = denominator.replace(0, np.nan)
+    
+    df['RSV'] = 100 * ((df['Close'] - low_min) / denominator)
+    df['RSV'] = df['RSV'].fillna(50)  # Fill NaN with neutral value
+    
     df['K'] = df['RSV'].ewm(span=k_smooth, adjust=False).mean()
     df['D'] = df['K'].ewm(span=d_smooth, adjust=False).mean()
     df['J'] = 3 * df['K'] - 2 * df['D']
@@ -129,7 +135,9 @@ def calculate_rsi(df, period=14):
     delta = df['Close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-    rs = gain / loss
+    # Avoid division by zero
+    rs = gain / loss.replace(0, np.nan)
+    rs = rs.fillna(1)  # Fill NaN with 1 (neutral)
     df['RSI'] = 100 - (100 / (1 + rs))
     return df
 
@@ -158,11 +166,14 @@ def calculate_bollinger_bands(df, period=20, std_dev=2):
 
 def calculate_all_indicators(df):
     """Calculate all technical indicators"""
-    df = calculate_macd(df)
-    df = calculate_kdj(df)
-    df = calculate_rsi(df)
-    df = calculate_atr(df)
-    df = calculate_bollinger_bands(df)
+    try:
+        df = calculate_macd(df)
+        df = calculate_kdj(df)
+        df = calculate_rsi(df)
+        df = calculate_atr(df)
+        df = calculate_bollinger_bands(df)
+    except Exception as e:
+        st.warning(f"技术指标计算警告: {e}")
     return df
 
 # ------------------------------------------------------------
@@ -255,25 +266,7 @@ def get_fundamental_data(yf_ticker):
         stock = yf.Ticker(yf_ticker)
         info = stock.info
         
-        # Earnings history and estimates
-        earnings_dates = []
-        try:
-            earnings = stock.earnings_dates
-            if earnings is not None and not earnings.empty:
-                earnings_dates = earnings.head(8).reset_index()
-        except:
-            pass
-        
-        # Analyst recommendations
-        recommendations = []
-        try:
-            rec = stock.recommendations
-            if rec is not None and not rec.empty:
-                recommendations = rec.tail(5).reset_index()
-        except:
-            pass
-        
-        # Key statistics
+        # Key statistics with safe defaults
         fundamentals = {
             '市值(亿)': info.get('marketCap', 0) / 1e8 if info.get('marketCap') else 0,
             'PE(TTM)': info.get('trailingPE', 0),
@@ -296,9 +289,10 @@ def get_fundamental_data(yf_ticker):
             '平均成交量': info.get('averageVolume', 0),
         }
         
-        return fundamentals, earnings_dates, recommendations, info
+        return fundamentals, info
     except Exception as e:
-        return None, None, None, None
+        st.warning(f"基本面数据获取失败: {e}")
+        return None, None
 
 # ------------------------------------------------------------
 # Index historical data with EMAs
@@ -321,7 +315,7 @@ def get_index_hist(ticker, period="6mo"):
 # Main
 # ------------------------------------------------------------
 def main():
-    st.markdown('<p class="main-header">📊 CSI 800 + CSI 1000 仪表盘</p>', unsafe_allow_html=True)
+    st.markdown('<p class="main-header">📊 CSI 800 + CSI 1000 对冲基金仪表盘</p>', unsafe_allow_html=True)
     st.markdown('<p class="sub-header">实时行情 + 技术分析 + 基本面深度挖掘 + 多周期板块轮动</p>', unsafe_allow_html=True)
 
     with st.sidebar:
@@ -354,12 +348,10 @@ def main():
     
     col1, col2, col3 = st.columns([2, 2, 1])
     with col1:
-        selected_stock = st.selectbox(
-            "选择股票",
-            options=df['代码'] + ' - ' + df['名称'],
-            format_func=lambda x: x
-        )
-        selected_code = selected_stock.split(' - ')[0]
+        # Create a list of display options
+        stock_options = df.apply(lambda x: f"{x['代码']} - {x['名称']}", axis=1).tolist()
+        selected_option = st.selectbox("选择股票", options=stock_options)
+        selected_code = selected_option.split(' - ')[0]
         stock_info = df[df['代码'] == selected_code].iloc[0]
     
     with col2:
@@ -385,7 +377,7 @@ def main():
             stock = yf.Ticker(yf_ticker)
             hist = stock.history(period=period)
             
-            if not hist.empty:
+            if not hist.empty and len(hist) > 30:
                 # Calculate all indicators
                 hist_with_indicators = calculate_all_indicators(hist)
                 latest = hist_with_indicators.iloc[-1]
@@ -453,8 +445,9 @@ def main():
                     y=hist_with_indicators['Volume'],
                     name='成交量',
                     marker_color=colors,
-                    opacity=0.5
-                ), row=1, col=1, secondary_y=False)
+                    opacity=0.5,
+                    showlegend=False
+                ), row=1, col=1)
                 
                 # MACD
                 fig.add_trace(go.Scatter(
@@ -478,7 +471,8 @@ def main():
                     y=hist_with_indicators['MACD_Hist'],
                     name='MACD Hist',
                     marker_color=colors_macd,
-                    opacity=0.5
+                    opacity=0.5,
+                    showlegend=False
                 ), row=2, col=1)
                 
                 # KDJ
@@ -539,7 +533,8 @@ def main():
                     title=f"{stock_info['名称']} ({selected_code}) - 技术分析"
                 )
                 
-                fig.update_xatches(rangeslider_visible=False)
+                # FIXED: Changed from update_xatches to update_xaxes
+                fig.update_xaxes(rangeslider_visible=False)
                 fig.update_layout(legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1))
                 
                 st.plotly_chart(fig, use_container_width=True)
@@ -570,6 +565,8 @@ def main():
                         ]
                     })
                     st.dataframe(latest_df, use_container_width=True, hide_index=True)
+            else:
+                st.warning(f"股票 {stock_info['名称']} 历史数据不足，无法计算技术指标")
 
     # --- Fundamental Analysis Section ---
     st.markdown('<div class="section-header">📚 基本面深度分析</div>', unsafe_allow_html=True)
@@ -577,7 +574,7 @@ def main():
     if selected_code:
         with st.spinner("加载基本面数据..."):
             yf_ticker = code_to_yf(selected_code)
-            fundamentals, earnings_dates, recommendations, info = get_fundamental_data(yf_ticker)
+            fundamentals, info = get_fundamental_data(yf_ticker)
             
             if fundamentals:
                 # Key Metrics in columns
@@ -650,22 +647,12 @@ def main():
                         </div>
                         """, unsafe_allow_html=True)
                 
-                with col2:
-                    # Analyst recommendations
-                    if recommendations is not None and not recommendations.empty:
-                        st.markdown("#### 分析师评级")
-                        st.dataframe(recommendations.head(), use_container_width=True)
-                
-                with col3:
-                    # Earnings dates
-                    if earnings_dates is not None and not earnings_dates.empty:
-                        st.markdown("#### 财报日期")
-                        st.dataframe(earnings_dates[['Date', 'EPS']].head(), use_container_width=True)
-                
                 # Business Summary
                 if info and 'longBusinessSummary' in info:
                     with st.expander("公司业务概览"):
                         st.write(info['longBusinessSummary'])
+            else:
+                st.warning("无法获取基本面数据")
 
     # --- Index charts with EMAs ---
     st.markdown("### 📈 主要指数技术分析")
@@ -806,7 +793,7 @@ def main():
     momentum_melted['周期'] = momentum_melted['周期'].map({
         '1d_平均涨跌幅': '1日',
         '1w_平均涨跌幅': '1周',
-        '1月_平均涨跌幅': '1月'
+        '1m_平均涨跌幅': '1月'
     })
     
     fig = px.bar(
@@ -869,8 +856,17 @@ def main():
     else:
         sector_df = df.copy()
 
-    sector_df['动量分'] = (sector_df['涨跌幅_1d'] - sector_df['涨跌幅_1d'].mean()) / sector_df['涨跌幅_1d'].std()
-    sector_df['成交额分'] = (sector_df['成交额(亿)'] - sector_df['成交额(亿)'].mean()) / sector_df['成交额(亿)'].std()
+    # Avoid division by zero in scoring
+    if sector_df['涨跌幅_1d'].std() > 0:
+        sector_df['动量分'] = (sector_df['涨跌幅_1d'] - sector_df['涨跌幅_1d'].mean()) / sector_df['涨跌幅_1d'].std()
+    else:
+        sector_df['动量分'] = 0
+        
+    if sector_df['成交额(亿)'].std() > 0:
+        sector_df['成交额分'] = (sector_df['成交额(亿)'] - sector_df['成交额(亿)'].mean()) / sector_df['成交额(亿)'].std()
+    else:
+        sector_df['成交额分'] = 0
+        
     sector_df['综合分'] = (sector_df['动量分']*0.6 + sector_df['成交额分']*0.4).round(2)
 
     top_stocks = sector_df.nlargest(15, '综合分')[['代码','名称','板块','最新价','涨跌幅_1d','涨跌幅_1w','涨跌幅_1m','成交额(亿)','综合分']]
@@ -911,9 +907,9 @@ def main():
         pos = "50-60%"
         action = "精选个股"
 
-    top_sectors_1d = sector_perf_1d.head(3).index.tolist()
-    top_sectors_1w = sector_perf_1w.head(3).index.tolist()
-    top_sectors_1m = sector_perf_1m.head(3).index.tolist()
+    top_sectors_1d = sector_perf_1d.head(3).index.tolist() if not sector_perf_1d.empty else []
+    top_sectors_1w = sector_perf_1w.head(3).index.tolist() if not sector_perf_1w.empty else []
+    top_sectors_1m = sector_perf_1m.head(3).index.tolist() if not sector_perf_1m.empty else []
     
     st.markdown(f"""
     <div class="strategy-box">
@@ -924,9 +920,9 @@ def main():
             <div><span class="metric-label">操作策略</span><div class="metric-value">{action}</div></div>
         </div>
         <div style="margin-top:1.5rem; border-top:1px solid #ddd; padding-top:1rem;">
-            <p><strong>短期强势板块(1日):</strong> {', '.join(top_sectors_1d[:3])}</p>
-            <p><strong>中期强势板块(1周):</strong> {', '.join(top_sectors_1w[:3])}</p>
-            <p><strong>长期强势板块(1月):</strong> {', '.join(top_sectors_1m[:3])}</p>
+            <p><strong>短期强势板块(1日):</strong> {', '.join(top_sectors_1d[:3]) if top_sectors_1d else 'N/A'}</p>
+            <p><strong>中期强势板块(1周):</strong> {', '.join(top_sectors_1w[:3]) if top_sectors_1w else 'N/A'}</p>
+            <p><strong>长期强势板块(1月):</strong> {', '.join(top_sectors_1m[:3]) if top_sectors_1m else 'N/A'}</p>
             <p><strong>选股参考:</strong> 板块内综合分 > 0 | 成交额 > 板块平均 | 多周期动量向上</p>
         </div>
     </div>
@@ -935,7 +931,7 @@ def main():
     st.markdown("---")
     st.markdown(f"""
     <div style="text-align:center; color:#666; font-size:0.8rem;">
-        数据来源: Yahoo Finance | 成分股列表: universe.csv | 对冲基金级分析系统 <br>
+        数据来源: Yahoo Finance | 成分股列表: universe.csv | 对冲基金级分析系统 v2.0<br>
         技术指标: MACD(12,26,9) | KDJ(9,3,3) | RSI(14) | ATR(14) | Bollinger Bands(20,2)<br>
         更新: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
     </div>
