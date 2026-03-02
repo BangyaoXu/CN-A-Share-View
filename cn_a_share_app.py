@@ -49,19 +49,31 @@ def fetch_realtime_stocks(ticker_list):
     prog = st.progress(0)
     status = st.empty()
     total = len(ticker_list)
+    
+    # Calculate date ranges for precise period control
+    end_date = datetime.now()
+    start_date_1m = (end_date - timedelta(days=35)).strftime('%Y-%m-%d')  # 35 days to ensure 20+ trading days
+    
     for i, (code, name, sector) in enumerate(ticker_list):
         status.text(f"获取 {i+1}/{total}: {name}")
         yf_ticker = code_to_yf(code)
         try:
+            # Request more data to ensure we have enough for 1m calculation
             stock = yf.Ticker(yf_ticker)
-            hist = stock.history(period="1mo")  # Fetch 1 month for multi-period returns
+            
+            # Get 2 months of data to be safe
+            hist = stock.history(start=start_date_1m, end=end_date.strftime('%Y-%m-%d'))
+            
             if not hist.empty and len(hist) >= 5:
                 last = hist.iloc[-1]
                 
                 # Calculate returns for different periods
                 # 1d return
-                prev_day = hist.iloc[-2] if len(hist) > 1 else last
-                ret_1d = ((last['Close'] - prev_day['Close']) / prev_day['Close']) * 100
+                if len(hist) >= 2:
+                    prev_day = hist.iloc[-2]
+                    ret_1d = ((last['Close'] - prev_day['Close']) / prev_day['Close']) * 100
+                else:
+                    ret_1d = 0
                 
                 # 1w return (5 trading days)
                 if len(hist) >= 5:
@@ -74,8 +86,13 @@ def fetch_realtime_stocks(ticker_list):
                 if len(hist) >= 20:
                     prev_month = hist.iloc[-20]
                     ret_1m = ((last['Close'] - prev_month['Close']) / prev_month['Close']) * 100
+                elif len(hist) >= 10:
+                    # If we have at least 10 days, use the oldest available as approximation
+                    prev_month = hist.iloc[0]
+                    ret_1m = ((last['Close'] - prev_month['Close']) / prev_month['Close']) * 100
                 else:
-                    ret_1m = ret_1w if len(hist) >= 5 else ret_1d
+                    # Fallback to 1w return if not enough data
+                    ret_1m = ret_1w
                 
                 stocks.append({
                     '代码': code,
@@ -90,6 +107,7 @@ def fetch_realtime_stocks(ticker_list):
                     '最高': round(last['High'], 2),
                     '最低': round(last['Low'], 2),
                     '开盘': round(last['Open'], 2),
+                    '数据点数': len(hist)  # Debug info
                 })
         except Exception as e:
             # skip failed stocks
@@ -98,7 +116,19 @@ def fetch_realtime_stocks(ticker_list):
         time.sleep(0.1)
     status.empty()
     prog.empty()
-    return pd.DataFrame(stocks)
+    
+    # Debug info - show data quality
+    if not stocks:
+        return pd.DataFrame(stocks)
+    
+    df = pd.DataFrame(stocks)
+    
+    # Show warning if many stocks have insufficient data
+    insufficient_data = df[df['涨跌幅_1m'] == df['涨跌幅_1w']].shape[0]
+    if insufficient_data > len(df) * 0.3:  # More than 30% have 1m = 1w
+        st.warning(f"⚠️ {insufficient_data} 只股票({insufficient_data/len(df)*100:.1f}%)的1月数据不完整，显示的是1周数据。实际交易天数可能不足20天。")
+    
+    return df
 
 # ------------------------------------------------------------
 # Index historical data with EMAs
@@ -237,9 +267,9 @@ def main():
     period_tabs = st.tabs(["1日表现", "1周表现", "1月表现"])
     
     for idx, (period, ret_col, vol_col) in enumerate([
-        ("1d", "1d_平均涨跌幅", "1d_波动率"),
-        ("1w", "1w_平均涨跌幅", "1w_波动率"),
-        ("1m", "1m_平均涨跌幅", "1m_波动率")
+        ("1日", "1d_平均涨跌幅", "1d_波动率"),
+        ("1周", "1w_平均涨跌幅", "1w_波动率"),
+        ("1月", "1m_平均涨跌幅", "1m_波动率")
     ]):
         with period_tabs[idx]:
             col1, col2 = st.columns([1, 1])
@@ -274,11 +304,12 @@ def main():
                 display_df = display_df.sort_values(f'平均涨跌幅(%)', ascending=False)
                 
                 # Format percentage columns
-                display_df[f'平均涨跌幅(%)'] = display_df[f'平均涨跌幅(%)'].apply(lambda x: f"{x:.2f}%")
-                display_df[f'波动率'] = display_df[f'波动率'].apply(lambda x: f"{x:.2f}%")
+                display_df_display = display_df.copy()
+                display_df_display[f'平均涨跌幅(%)'] = display_df_display[f'平均涨跌幅(%)'].apply(lambda x: f"{x:.2f}%")
+                display_df_display[f'波动率'] = display_df_display[f'波动率'].apply(lambda x: f"{x:.2f}%")
                 
                 st.dataframe(
-                    display_df,
+                    display_df_display,
                     use_container_width=True,
                     hide_index=True,
                     height=500
