@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 import yfinance as yf
 import time
 
-st.set_page_config(layout="wide", page_title="CSI 800 + CSI 100 Dashboard", page_icon="📊")
+st.set_page_config(layout="wide", page_title="CSI 800 + CSI 1000 Dashboard", page_icon="📊")
 
 # Custom CSS
 st.markdown("""
