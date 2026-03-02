@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 import yfinance as yf
 import time
 
-st.set_page_config(layout="wide", page_title="CSI 300 真实数据仪表盘", page_icon="📊")
+st.set_page_config(layout="wide", page_title="CSI 800 + CSI 100 Dashboard", page_icon="📊")
 
 # Custom CSS
 st.markdown("""
@@ -28,7 +28,7 @@ st.markdown("""
 # ------------------------------------------------------------
 @st.cache_data(ttl=86400)
 def load_constituents():
-    df = pd.read_csv('csi300_full.csv')
+    df = pd.read_csv('universe.csv')
     df['code'] = df['code'].astype(str).str.zfill(6)
     return df
 
@@ -54,24 +54,44 @@ def fetch_realtime_stocks(ticker_list):
         yf_ticker = code_to_yf(code)
         try:
             stock = yf.Ticker(yf_ticker)
-            hist = stock.history(period="5d")
-            if not hist.empty:
+            hist = stock.history(period="1mo")  # Fetch 1 month for multi-period returns
+            if not hist.empty and len(hist) >= 5:
                 last = hist.iloc[-1]
-                prev = hist.iloc[-2] if len(hist) > 1 else last
-                pct = ((last['Close'] - prev['Close']) / prev['Close']) * 100
+                
+                # Calculate returns for different periods
+                # 1d return
+                prev_day = hist.iloc[-2] if len(hist) > 1 else last
+                ret_1d = ((last['Close'] - prev_day['Close']) / prev_day['Close']) * 100
+                
+                # 1w return (5 trading days)
+                if len(hist) >= 5:
+                    prev_week = hist.iloc[-5]
+                    ret_1w = ((last['Close'] - prev_week['Close']) / prev_week['Close']) * 100
+                else:
+                    ret_1w = ret_1d
+                
+                # 1m return (20 trading days)
+                if len(hist) >= 20:
+                    prev_month = hist.iloc[-20]
+                    ret_1m = ((last['Close'] - prev_month['Close']) / prev_month['Close']) * 100
+                else:
+                    ret_1m = ret_1w if len(hist) >= 5 else ret_1d
+                
                 stocks.append({
                     '代码': code,
                     '名称': name,
                     '板块': sector,
                     '最新价': round(last['Close'], 2),
-                    '涨跌幅': round(pct, 2),
+                    '涨跌幅_1d': round(ret_1d, 2),
+                    '涨跌幅_1w': round(ret_1w, 2),
+                    '涨跌幅_1m': round(ret_1m, 2),
                     '成交量': last['Volume'],
                     '成交额(亿)': round(last['Volume'] * last['Close'] / 1e8, 2),
                     '最高': round(last['High'], 2),
                     '最低': round(last['Low'], 2),
                     '开盘': round(last['Open'], 2),
                 })
-        except Exception:
+        except Exception as e:
             # skip failed stocks
             pass
         prog.progress((i+1)/total)
@@ -91,7 +111,7 @@ def get_index_hist(ticker, period="6mo"):
             return None
         df = df[['Close']].copy()
         df.columns = ['close']
-        for span in [20, 60, 120, 250]:   # EMA 250 instead of 150
+        for span in [20, 60, 120, 250]:
             df[f'EMA{span}'] = df['close'].ewm(span=span, adjust=False).mean()
         return df
     except:
@@ -102,7 +122,7 @@ def get_index_hist(ticker, period="6mo"):
 # ------------------------------------------------------------
 def main():
     st.markdown('<p class="main-header">📊 CSI 300 真实数据仪表盘</p>', unsafe_allow_html=True)
-    st.markdown('<p class="sub-header">实时行情 + 技术分析 + 板块轮动</p>', unsafe_allow_html=True)
+    st.markdown('<p class="sub-header">实时行情 + 技术分析 + 多周期板块轮动</p>', unsafe_allow_html=True)
 
     with st.sidebar:
         st.image("https://img.icons8.com/color/96/000000/investment-portfolio.png", width=100)
@@ -113,7 +133,7 @@ def main():
         st.markdown("---")
         st.markdown("### 数据源")
         st.info("📈 股价: Yahoo Finance")
-        st.info("📊 成分股: 本地 CSV")
+        st.info("📊 成分股: universe.csv")
         st.caption(f"最后更新: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         st.warning("新闻与情绪数据暂不可用（无可靠免费API）")
 
@@ -151,62 +171,190 @@ def main():
     # --- Key Metrics Row ---
     st.markdown("---")
     col1, col2, col3, col4, col5 = st.columns(5)
-    avg_ret = df['涨跌幅'].mean()
-    pos_ratio = (df['涨跌幅'] > 0).mean() * 100
+    avg_ret_1d = df['涨跌幅_1d'].mean()
+    avg_ret_1w = df['涨跌幅_1w'].mean()
+    avg_ret_1m = df['涨跌幅_1m'].mean()
+    pos_ratio = (df['涨跌幅_1d'] > 0).mean() * 100
     total_vol = df['成交额(亿)'].sum()
-    vola = df['涨跌幅'].std()
+    vola = df['涨跌幅_1d'].std()
+    
     with col1:
-        st.metric("平均涨跌幅", f"{avg_ret:.2f}%")
+        st.metric("平均涨幅(1日)", f"{avg_ret_1d:.2f}%", delta=f"{avg_ret_1d:.2f}%")
     with col2:
-        st.metric("上涨比例", f"{pos_ratio:.1f}%", delta=f"{pos_ratio-50:.1f}%")
+        st.metric("平均涨幅(1周)", f"{avg_ret_1w:.2f}%", delta=f"{avg_ret_1w:.2f}%")
     with col3:
-        st.metric("总成交额(亿)", f"{total_vol:.0f}")
+        st.metric("平均涨幅(1月)", f"{avg_ret_1m:.2f}%", delta=f"{avg_ret_1m:.2f}%")
     with col4:
-        st.metric("波动率", f"{vola:.2f}%")
+        st.metric("上涨比例", f"{pos_ratio:.1f}%", delta=f"{pos_ratio-50:.1f}%")
     with col5:
-        # Simple sentiment proxy based on breadth
-        breadth_sentiment = 50 + (pos_ratio - 50)
-        st.metric("市场宽度", f"{breadth_sentiment:.0f}")
+        st.metric("总成交额(亿)", f"{total_vol:.0f}")
 
     # --- Market Insight ---
-    best_sector = df.groupby('板块')['涨跌幅'].mean().idxmax()
-    best_ret = df.groupby('板块')['涨跌幅'].mean().max()
+    # Calculate sector performance for each period
+    sector_perf_1d = df.groupby('板块')['涨跌幅_1d'].mean().sort_values(ascending=False)
+    sector_perf_1w = df.groupby('板块')['涨跌幅_1w'].mean().sort_values(ascending=False)
+    sector_perf_1m = df.groupby('板块')['涨跌幅_1m'].mean().sort_values(ascending=False)
+    
+    best_sector_1d = sector_perf_1d.index[0] if not sector_perf_1d.empty else "N/A"
+    best_ret_1d = sector_perf_1d.iloc[0] if not sector_perf_1d.empty else 0
+    best_sector_1w = sector_perf_1w.index[0] if not sector_perf_1w.empty else "N/A"
+    best_ret_1w = sector_perf_1w.iloc[0] if not sector_perf_1w.empty else 0
+    best_sector_1m = sector_perf_1m.index[0] if not sector_perf_1m.empty else "N/A"
+    best_ret_1m = sector_perf_1m.iloc[0] if not sector_perf_1m.empty else 0
+    
     st.markdown(f"""
     <div class="insight-box">
         <strong>📊 市场实时洞察</strong><br>
-        强势板块: {best_sector} (+{best_ret:.2f}%) |
-        波动风险: {'高' if vola>2 else '中' if vola>1 else '低'} |
+        最强板块(1日): {best_sector_1d} (+{best_ret_1d:.2f}%) |
+        最强板块(1周): {best_sector_1w} (+{best_ret_1w:.2f}%) |
+        最强板块(1月): {best_sector_1m} (+{best_ret_1m:.2f}%) |
         上涨家数: {int(pos_ratio*len(df)/100)} / {len(df)}
     </div>
     """, unsafe_allow_html=True)
 
-    # --- Sector Analysis ---
-    st.markdown('<div class="section-header">🏭 板块深度分析</div>', unsafe_allow_html=True)
-    sector_stats = df.groupby('板块').agg(
-        平均涨跌幅=('涨跌幅','mean'),
-        涨跌中位数=('涨跌幅','median'),
-        波动率=('涨跌幅','std'),
-        成分股数=('代码','count'),
-        总成交额=('成交额(亿)','sum'),
-        平均成交额=('成交额(亿)','mean')
-    ).reset_index().round(2)
-    sector_stats = sector_stats.sort_values('平均涨跌幅', ascending=False)
-
-    # Bubble chart
-    fig = px.scatter(sector_stats, x='平均涨跌幅', y='总成交额', size='成分股数',
-                     color='平均涨跌幅', text='板块', title='板块轮动气泡图',
-                     color_continuous_scale='RdYlGn', size_max=50)
-    fig.update_traces(textposition='top center')
+    # --- Multi-Period Sector Rotation Analysis ---
+    st.markdown('<div class="section-header">🔄 多周期板块轮动分析</div>', unsafe_allow_html=True)
+    
+    # Calculate sector statistics for all periods
+    sector_stats = df.groupby('板块').agg({
+        '涨跌幅_1d': ['mean', 'std'],
+        '涨跌幅_1w': ['mean', 'std'],
+        '涨跌幅_1m': ['mean', 'std'],
+        '代码': 'count',
+        '成交额(亿)': 'sum'
+    }).round(2)
+    
+    sector_stats.columns = [
+        '1d_平均涨跌幅', '1d_波动率',
+        '1w_平均涨跌幅', '1w_波动率',
+        '1m_平均涨跌幅', '1m_波动率',
+        '成分股数', '总成交额'
+    ]
+    sector_stats = sector_stats.reset_index()
+    sector_stats['成交额(亿)'] = sector_stats['总成交额'].round(2)
+    
+    # Create tabs for different periods
+    period_tabs = st.tabs(["1日表现", "1周表现", "1月表现"])
+    
+    for idx, (period, ret_col, vol_col) in enumerate([
+        ("1d", "1d_平均涨跌幅", "1d_波动率"),
+        ("1w", "1w_平均涨跌幅", "1w_波动率"),
+        ("1m", "1m_平均涨跌幅", "1m_波动率")
+    ]):
+        with period_tabs[idx]:
+            col1, col2 = st.columns([1, 1])
+            
+            with col1:
+                # Bubble chart for this period
+                fig = px.scatter(
+                    sector_stats,
+                    x=ret_col,
+                    y='成交额(亿)',
+                    size='成分股数',
+                    color=ret_col,
+                    text='板块',
+                    title=f'板块轮动气泡图 ({period}表现)',
+                    color_continuous_scale='RdYlGn',
+                    size_max=50,
+                    labels={ret_col: f'平均涨跌幅 (%)', '成交额(亿)': '成交额 (亿)'}
+                )
+                fig.update_traces(textposition='top center')
+                fig.update_layout(height=500)
+                st.plotly_chart(fig, use_container_width=True)
+            
+            with col2:
+                # Table for this period
+                st.subheader(f"板块详细数据 ({period})")
+                display_df = sector_stats[[
+                    '板块', ret_col, vol_col, '成分股数', '成交额(亿)'
+                ]].copy()
+                display_df.columns = [
+                    '板块', f'平均涨跌幅(%)', f'波动率', '成分股数', '成交额(亿)'
+                ]
+                display_df = display_df.sort_values(f'平均涨跌幅(%)', ascending=False)
+                
+                # Format percentage columns
+                display_df[f'平均涨跌幅(%)'] = display_df[f'平均涨跌幅(%)'].apply(lambda x: f"{x:.2f}%")
+                display_df[f'波动率'] = display_df[f'波动率'].apply(lambda x: f"{x:.2f}%")
+                
+                st.dataframe(
+                    display_df,
+                    use_container_width=True,
+                    hide_index=True,
+                    height=500
+                )
+    
+    # --- Sector Momentum Comparison ---
+    st.markdown('<div class="section-header">📊 板块动量对比</div>', unsafe_allow_html=True)
+    
+    # Prepare data for momentum comparison
+    momentum_df = sector_stats[['板块', '1d_平均涨跌幅', '1w_平均涨跌幅', '1m_平均涨跌幅']].copy()
+    momentum_df = momentum_df.sort_values('1m_平均涨跌幅', ascending=False).head(15)
+    
+    # Melt for grouped bar chart
+    momentum_melted = momentum_df.melt(
+        id_vars=['板块'],
+        value_vars=['1d_平均涨跌幅', '1w_平均涨跌幅', '1m_平均涨跌幅'],
+        var_name='周期',
+        value_name='涨跌幅'
+    )
+    momentum_melted['周期'] = momentum_melted['周期'].map({
+        '1d_平均涨跌幅': '1日',
+        '1w_平均涨跌幅': '1周',
+        '1m_平均涨跌幅': '1月'
+    })
+    
+    fig = px.bar(
+        momentum_melted,
+        x='板块',
+        y='涨跌幅',
+        color='周期',
+        barmode='group',
+        title='前15板块多周期动量对比',
+        labels={'涨跌幅': '涨跌幅 (%)', '板块': ''},
+        color_discrete_sequence=['#FF6B6B', '#4ECDC4', '#45B7D1']
+    )
+    fig.update_layout(height=500)
     st.plotly_chart(fig, use_container_width=True)
 
-    # Bar chart
-    fig = px.bar(sector_stats.head(10), x='板块', y='平均涨跌幅', color='平均涨跌幅',
-                 text='平均涨跌幅', title='板块涨跌幅前十',
-                 color_continuous_scale=['#EF4444','#FCD34D','#10B981'])
-    fig.update_traces(texttemplate='%{text:.2f}%', textposition='outside')
-    st.plotly_chart(fig, use_container_width=True)
-
-    st.dataframe(sector_stats, use_container_width=True, hide_index=True)
+    # --- Top Movers ---
+    st.markdown('<div class="section-header">📈 全市场龙虎榜</div>', unsafe_allow_html=True)
+    
+    mover_tabs = st.tabs(["涨幅榜", "跌幅榜", "成交额榜"])
+    
+    with mover_tabs[0]:
+        col1, col2 = st.columns(2)
+        with col1:
+            st.subheader("1日涨幅前十")
+            gain_1d = df.nlargest(10, '涨跌幅_1d')[['代码','名称','板块','最新价','涨跌幅_1d','成交额(亿)']].copy()
+            gain_1d['涨跌幅_1d'] = gain_1d['涨跌幅_1d'].apply(lambda x: f"{x:.2f}%")
+            st.dataframe(gain_1d, use_container_width=True, hide_index=True)
+        
+        with col2:
+            st.subheader("1周涨幅前十")
+            gain_1w = df.nlargest(10, '涨跌幅_1w')[['代码','名称','板块','最新价','涨跌幅_1w','成交额(亿)']].copy()
+            gain_1w['涨跌幅_1w'] = gain_1w['涨跌幅_1w'].apply(lambda x: f"{x:.2f}%")
+            st.dataframe(gain_1w, use_container_width=True, hide_index=True)
+    
+    with mover_tabs[1]:
+        col1, col2 = st.columns(2)
+        with col1:
+            st.subheader("1日跌幅前十")
+            lose_1d = df.nsmallest(10, '涨跌幅_1d')[['代码','名称','板块','最新价','涨跌幅_1d','成交额(亿)']].copy()
+            lose_1d['涨跌幅_1d'] = lose_1d['涨跌幅_1d'].apply(lambda x: f"{x:.2f}%")
+            st.dataframe(lose_1d, use_container_width=True, hide_index=True)
+        
+        with col2:
+            st.subheader("1周跌幅前十")
+            lose_1w = df.nsmallest(10, '涨跌幅_1w')[['代码','名称','板块','最新价','涨跌幅_1w','成交额(亿)']].copy()
+            lose_1w['涨跌幅_1w'] = lose_1w['涨跌幅_1w'].apply(lambda x: f"{x:.2f}%")
+            st.dataframe(lose_1w, use_container_width=True, hide_index=True)
+    
+    with mover_tabs[2]:
+        st.subheader("成交额前十")
+        volume_top = df.nlargest(10, '成交额(亿)')[['代码','名称','板块','最新价','涨跌幅_1d','成交额(亿)']].copy()
+        volume_top['涨跌幅_1d'] = volume_top['涨跌幅_1d'].apply(lambda x: f"{x:.2f}%")
+        st.dataframe(volume_top, use_container_width=True, hide_index=True)
 
     # --- Sector Stock Selector ---
     st.markdown('<div class="section-header">🔍 板块内选股</div>', unsafe_allow_html=True)
@@ -216,62 +364,69 @@ def main():
     else:
         sector_df = df.copy()
 
-    # Multi‑factor scoring (momentum + volume)
-    sector_df['动量分'] = (sector_df['涨跌幅'] - sector_df['涨跌幅'].mean()) / sector_df['涨跌幅'].std()
+    # Multi‑factor scoring (using 1d momentum + volume)
+    sector_df['动量分'] = (sector_df['涨跌幅_1d'] - sector_df['涨跌幅_1d'].mean()) / sector_df['涨跌幅_1d'].std()
     sector_df['成交额分'] = (sector_df['成交额(亿)'] - sector_df['成交额(亿)'].mean()) / sector_df['成交额(亿)'].std()
     sector_df['综合分'] = (sector_df['动量分']*0.6 + sector_df['成交额分']*0.4).round(2)
 
-    top_stocks = sector_df.nlargest(15, '综合分')[['代码','名称','板块','最新价','涨跌幅','成交额(亿)','综合分']]
-    top_stocks['涨跌幅'] = top_stocks['涨跌幅'].apply(lambda x: f"{x:.2f}%")
+    top_stocks = sector_df.nlargest(15, '综合分')[['代码','名称','板块','最新价','涨跌幅_1d','涨跌幅_1w','涨跌幅_1m','成交额(亿)','综合分']]
+    top_stocks['涨跌幅_1d'] = top_stocks['涨跌幅_1d'].apply(lambda x: f"{x:.2f}%")
+    top_stocks['涨跌幅_1w'] = top_stocks['涨跌幅_1w'].apply(lambda x: f"{x:.2f}%")
+    top_stocks['涨跌幅_1m'] = top_stocks['涨跌幅_1m'].apply(lambda x: f"{x:.2f}%")
     st.dataframe(top_stocks, use_container_width=True, hide_index=True)
-
-    # --- Top Movers ---
-    st.markdown('<div class="section-header">📈 全市场龙虎榜</div>', unsafe_allow_html=True)
-    col1, col2 = st.columns(2)
-    with col1:
-        st.subheader("涨幅前十")
-        gain = df.nlargest(10, '涨跌幅')[['代码','名称','板块','最新价','涨跌幅','成交额(亿)']]
-        gain['涨跌幅'] = gain['涨跌幅'].apply(lambda x: f"{x:.2f}%")
-        st.dataframe(gain, use_container_width=True, hide_index=True)
-    with col2:
-        st.subheader("跌幅前十")
-        lose = df.nsmallest(10, '涨跌幅')[['代码','名称','板块','最新价','涨跌幅','成交额(亿)']]
-        lose['涨跌幅'] = lose['涨跌幅'].apply(lambda x: f"{x:.2f}%")
-        st.dataframe(lose, use_container_width=True, hide_index=True)
 
     # --- Strategy Recommendation ---
     st.markdown('<div class="section-header">📋 实时策略建议</div>', unsafe_allow_html=True)
-    if avg_ret > 0.5 and pos_ratio > 60:
+    
+    # Determine market regime using multiple timeframes
+    avg_ret_1d = df['涨跌幅_1d'].mean()
+    avg_ret_1w = df['涨跌幅_1w'].mean()
+    avg_ret_1m = df['涨跌幅_1m'].mean()
+    pos_ratio_1d = (df['涨跌幅_1d'] > 0).mean() * 100
+    vola_1d = df['涨跌幅_1d'].std()
+    
+    # Check for trend consistency
+    trend_strength = "强势" if avg_ret_1d > 0 and avg_ret_1w > 0 and avg_ret_1m > 0 else "弱势" if avg_ret_1d < 0 and avg_ret_1w < 0 and avg_ret_1m < 0 else "分化"
+    
+    if avg_ret_1d > 0.5 and pos_ratio_1d > 60:
         regime = "牛市"
         color = "#10B981"
         pos = "70-80%"
-    elif avg_ret < -0.5 and pos_ratio < 40:
+        action = "积极进攻"
+    elif avg_ret_1d < -0.5 and pos_ratio_1d < 40:
         regime = "熊市"
         color = "#EF4444"
         pos = "20-30%"
-    elif vola > 2:
+        action = "全面防御"
+    elif vola_1d > 2:
         regime = "高波动市"
         color = "#F59E0B"
         pos = "40-50%"
+        action = "波段操作"
     else:
         regime = "震荡市"
         color = "#4F46E5"
         pos = "50-60%"
+        action = "精选个股"
 
-    top_sectors = sector_stats.head(3)['板块'].tolist()
-    bottom_sectors = sector_stats.tail(3)['板块'].tolist()
+    # Get top and bottom sectors for each period
+    top_sectors_1d = sector_perf_1d.head(3).index.tolist()
+    top_sectors_1w = sector_perf_1w.head(3).index.tolist()
+    top_sectors_1m = sector_perf_1m.head(3).index.tolist()
+    
     st.markdown(f"""
     <div class="strategy-box">
-        <h3>当前市场状态: <span style="color:{color};">{regime}</span></h3>
+        <h3>当前市场状态: <span style="color:{color};">{regime} ({trend_strength})</span></h3>
         <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:1rem;">
             <div><span class="metric-label">建议仓位</span><div class="metric-value">{pos}</div></div>
-            <div><span class="metric-label">风险水平</span><div class="metric-value">{'高' if vola>2 else '中' if vola>1 else '低'}</div></div>
-            <div><span class="metric-label">操作方向</span><div class="metric-value">{'积极' if avg_ret>0 else '防御'}</div></div>
+            <div><span class="metric-label">风险水平</span><div class="metric-value">{'高' if vola_1d>2 else '中' if vola_1d>1 else '低'}</div></div>
+            <div><span class="metric-label">操作策略</span><div class="metric-value">{action}</div></div>
         </div>
         <div style="margin-top:1.5rem; border-top:1px solid #ddd; padding-top:1rem;">
-            <p><strong>重点关注板块:</strong> {', '.join(top_sectors)}</p>
-            <p><strong>建议规避板块:</strong> {', '.join(bottom_sectors)}</p>
-            <p><strong>选股参考:</strong> 板块内综合分 > 0 | 成交额 > 板块平均</p>
+            <p><strong>短期强势板块(1日):</strong> {', '.join(top_sectors_1d[:3])}</p>
+            <p><strong>中期强势板块(1周):</strong> {', '.join(top_sectors_1w[:3])}</p>
+            <p><strong>长期强势板块(1月):</strong> {', '.join(top_sectors_1m[:3])}</p>
+            <p><strong>选股参考:</strong> 板块内综合分 > 0 | 成交额 > 板块平均 | 多周期动量向上</p>
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -279,7 +434,7 @@ def main():
     st.markdown("---")
     st.markdown(f"""
     <div style="text-align:center; color:#666; font-size:0.8rem;">
-        数据来源: Yahoo Finance | 成分股列表: csi300_full.csv | 更新: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+        数据来源: Yahoo Finance | 成分股列表: universe.csv | 更新: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
     </div>
     """, unsafe_allow_html=True)
 
