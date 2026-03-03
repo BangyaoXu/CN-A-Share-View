@@ -52,6 +52,14 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ------------------------------------------------------------
+# Initialize session state for fundamentals cache
+# ------------------------------------------------------------
+if 'fundamentals_cache' not in st.session_state:
+    st.session_state.fundamentals_cache = None
+if 'fundamentals_loading' not in st.session_state:
+    st.session_state.fundamentals_loading = False
+
+# ------------------------------------------------------------
 # Load constituent list from CSV
 # ------------------------------------------------------------
 @st.cache_data(ttl=86400)
@@ -78,38 +86,28 @@ def fetch_realtime_stocks(ticker_list):
     total = len(ticker_list)
     
     end_date = datetime.now()
-    start_date_3m = (end_date - timedelta(days=95)).strftime('%Y-%m-%d')  # Get 3 months for better 1m calculation
+    start_date_3m = (end_date - timedelta(days=95)).strftime('%Y-%m-%d')
     
     for i, (code, name, sector) in enumerate(ticker_list):
         status.text(f"获取 {i+1}/{total}: {name}")
         yf_ticker = code_to_yf(code)
         try:
-            # Add jitter to avoid rate limiting
             time.sleep(random.uniform(0.1, 0.3))
             
             stock = yf.Ticker(yf_ticker)
-            
-            # Get stock info for fundamental data
             stock_info = stock.info
             trailing_eps = stock_info.get('trailingEps', 0)
             forward_eps = stock_info.get('forwardEps', 0)
             
             hist = stock.history(start=start_date_3m, end=end_date.strftime('%Y-%m-%d'))
             
-            if not hist.empty and len(hist) >= 20:  # Need at least 20 days for 1m
+            if not hist.empty and len(hist) >= 20:
                 last = hist.iloc[-1]
                 
-                # Calculate returns for different periods
-                # 1d return
                 ret_1d = ((last['Close'] - hist.iloc[-2]['Close']) / hist.iloc[-2]['Close']) * 100 if len(hist) >= 2 else 0
-                
-                # 1w return (5 trading days)
                 ret_1w = ((last['Close'] - hist.iloc[-6]['Close']) / hist.iloc[-6]['Close']) * 100 if len(hist) >= 6 else ret_1d
-                
-                # 1m return (21 trading days - approx 1 month)
                 ret_1m = ((last['Close'] - hist.iloc[-22]['Close']) / hist.iloc[-22]['Close']) * 100 if len(hist) >= 22 else ret_1w
                 
-                # Calculate forward P/E metrics
                 pe1 = last['Close'] / trailing_eps if trailing_eps and trailing_eps > 0 else None
                 pe2 = last['Close'] / forward_eps if forward_eps and forward_eps > 0 else None
                 
@@ -126,11 +124,10 @@ def fetch_realtime_stocks(ticker_list):
                     '成交额(亿)': round(last['Volume'] * last['Close'] / 1e8, 2),
                     'trailing_eps': trailing_eps,
                     'forward_eps': forward_eps,
-                    'pe1': pe1,  # P/E based on trailing EPS
-                    'pe2': pe2,  # P/E based on forward EPS
+                    'pe1': pe1,
+                    'pe2': pe2,
                 })
         except Exception as e:
-            # If rate limited, skip and continue
             if "Too Many Requests" in str(e):
                 st.warning(f"API限流，跳过 {name}")
             pass
@@ -141,10 +138,64 @@ def fetch_realtime_stocks(ticker_list):
     return pd.DataFrame(stocks)
 
 # ------------------------------------------------------------
-# Technical Analysis Functions
+# Batch fetch fundamental data for all stocks (cached 2 hours)
+# ------------------------------------------------------------
+@st.cache_data(ttl=7200)
+def fetch_all_fundamentals(ticker_list):
+    """Fetch fundamental data for all stocks in batch"""
+    all_fundamentals = {}
+    prog = st.progress(0)
+    status = st.empty()
+    total = len(ticker_list)
+    
+    for i, yf_ticker in enumerate(ticker_list):
+        status.text(f"获取基本面数据 {i+1}/{total}: {yf_ticker}")
+        try:
+            time.sleep(random.uniform(0.3, 0.5))  # Rate limiting
+            
+            stock = yf.Ticker(yf_ticker)
+            info = stock.info
+            
+            if info and len(info) > 10:
+                fundamentals = {
+                    '市值(亿)': info.get('marketCap', 0) / 1e8 if info.get('marketCap') else 0,
+                    'PE(TTM)': info.get('trailingPE', 0),
+                    'PE(滚动)': info.get('forwardPE', 0),
+                    'PEG': info.get('pegRatio', 0),
+                    'PB': info.get('priceToBook', 0),
+                    'PS': info.get('priceToSalesTrailing12Months', 0),
+                    '股息率(%)': info.get('dividendYield', 0) * 100 if info.get('dividendYield') else 0,
+                    'ROE(%)': info.get('returnOnEquity', 0) * 100 if info.get('returnOnEquity') else 0,
+                    'ROA(%)': info.get('returnOnAssets', 0) * 100 if info.get('returnOnAssets') else 0,
+                    '毛利率(%)': info.get('grossMargins', 0) * 100 if info.get('grossMargins') else 0,
+                    '净利率(%)': info.get('profitMargins', 0) * 100 if info.get('profitMargins') else 0,
+                    '营收增长(%)': info.get('revenueGrowth', 0) * 100 if info.get('revenueGrowth') else 0,
+                    '每股收益': info.get('trailingEps', 0),
+                    '每股净资产': info.get('bookValue', 0),
+                    '资产负债率(%)': info.get('debtToEquity', 0) if info.get('debtToEquity') else 0,
+                    'Beta': info.get('beta', 0),
+                    '52周高点': info.get('fiftyTwoWeekHigh', 0),
+                    '52周低点': info.get('fiftyTwoWeekLow', 0),
+                    '平均成交量': info.get('averageVolume', 0),
+                    'forward_eps': info.get('forwardEps', 0),
+                    'trailing_eps': info.get('trailingEps', 0),
+                    'longBusinessSummary': info.get('longBusinessSummary', ''),
+                }
+                all_fundamentals[yf_ticker] = fundamentals
+            else:
+                all_fundamentals[yf_ticker] = None
+        except Exception as e:
+            all_fundamentals[yf_ticker] = None
+        prog.progress((i+1)/total)
+    
+    status.empty()
+    prog.empty()
+    return all_fundamentals
+
+# ------------------------------------------------------------
+# Technical Analysis Functions (unchanged)
 # ------------------------------------------------------------
 def calculate_macd(df, fast=12, slow=26, signal=9):
-    """Calculate MACD indicator"""
     df = df.copy()
     exp1 = df['Close'].ewm(span=fast, adjust=False).mean()
     exp2 = df['Close'].ewm(span=slow, adjust=False).mean()
@@ -154,17 +205,15 @@ def calculate_macd(df, fast=12, slow=26, signal=9):
     return df
 
 def calculate_kdj(df, period=9, k_smooth=3, d_smooth=3):
-    """Calculate KDJ indicator"""
     df = df.copy()
     low_min = df['Low'].rolling(window=period).min()
     high_max = df['High'].rolling(window=period).max()
     
-    # Avoid division by zero
     denominator = high_max - low_min
     denominator = denominator.replace(0, np.nan)
     
     df['RSV'] = 100 * ((df['Close'] - low_min) / denominator)
-    df['RSV'] = df['RSV'].fillna(50)  # Fill NaN with neutral value
+    df['RSV'] = df['RSV'].fillna(50)
     
     df['K'] = df['RSV'].ewm(span=k_smooth, adjust=False).mean()
     df['D'] = df['K'].ewm(span=d_smooth, adjust=False).mean()
@@ -172,19 +221,16 @@ def calculate_kdj(df, period=9, k_smooth=3, d_smooth=3):
     return df
 
 def calculate_rsi(df, period=14):
-    """Calculate RSI indicator"""
     df = df.copy()
     delta = df['Close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-    # Avoid division by zero
     rs = gain / loss.replace(0, np.nan)
-    rs = rs.fillna(1)  # Fill NaN with 1 (neutral)
+    rs = rs.fillna(1)
     df['RSI'] = 100 - (100 / (1 + rs))
     return df
 
 def calculate_atr(df, period=14):
-    """Calculate Average True Range"""
     df = df.copy()
     high_low = df['High'] - df['Low']
     high_close = np.abs(df['High'] - df['Close'].shift())
@@ -196,7 +242,6 @@ def calculate_atr(df, period=14):
     return df
 
 def calculate_bollinger_bands(df, period=20, std_dev=2):
-    """Calculate Bollinger Bands"""
     df = df.copy()
     df['BB_Middle'] = df['Close'].rolling(window=period).mean()
     bb_std = df['Close'].rolling(window=period).std()
@@ -207,7 +252,6 @@ def calculate_bollinger_bands(df, period=20, std_dev=2):
     return df
 
 def calculate_all_indicators(df):
-    """Calculate all technical indicators"""
     try:
         df = calculate_macd(df)
         df = calculate_kdj(df)
@@ -222,11 +266,9 @@ def calculate_all_indicators(df):
 # Generate trading signals based on indicators
 # ------------------------------------------------------------
 def generate_trading_signals(latest):
-    """Generate trading signals based on latest indicator values"""
     signals = []
     score = 0
     
-    # MACD Signal
     if latest['MACD'] > latest['Signal'] and latest['MACD_Hist'] > 0:
         signals.append(("MACD", "买入", 2))
         score += 2
@@ -236,7 +278,6 @@ def generate_trading_signals(latest):
     else:
         signals.append(("MACD", "中性", 0))
     
-    # KDJ Signal
     if latest['K'] > latest['D'] and latest['J'] > latest['K'] and latest['K'] < 30:
         signals.append(("KDJ", "超卖反弹", 2))
         score += 2
@@ -252,7 +293,6 @@ def generate_trading_signals(latest):
     else:
         signals.append(("KDJ", "中性", 0))
     
-    # RSI Signal
     if latest['RSI'] < 30:
         signals.append(("RSI", "超卖", 2))
         score += 2
@@ -268,7 +308,6 @@ def generate_trading_signals(latest):
         signals.append(("RSI", "偏弱", -1))
         score -= 1
     
-    # Bollinger Bands Signal
     if latest['Close'] < latest['BB_Lower']:
         signals.append(("Bollinger", "下轨支撑", 2))
         score += 2
@@ -284,7 +323,6 @@ def generate_trading_signals(latest):
     else:
         signals.append(("Bollinger", "中性", 0))
     
-    # Overall signal
     if score >= 4:
         overall = ("整体", "强烈买入", score, "#10B981")
     elif score >= 2:
@@ -299,65 +337,19 @@ def generate_trading_signals(latest):
     return signals, overall
 
 # ------------------------------------------------------------
-# Get fundamental data from Yahoo Finance with better rate limiting
-# ------------------------------------------------------------
-@st.cache_data(ttl=7200)
-def get_fundamental_data(yf_ticker):
-    """Get fundamental data for a stock with rate limiting"""
-    try:
-        # Add delay to avoid rate limiting
-        time.sleep(random.uniform(0.5, 1.0))
-        
-        stock = yf.Ticker(yf_ticker)
-        info = stock.info
-        
-        # If we get rate limited, info might be empty
-        if not info or len(info) < 10:
-            return None, None
-        
-        # Key statistics with safe defaults
-        fundamentals = {
-            '市值(亿)': info.get('marketCap', 0) / 1e8 if info.get('marketCap') else 0,
-            'PE(TTM)': info.get('trailingPE', 0),
-            'PE(滚动)': info.get('forwardPE', 0),
-            'PEG': info.get('pegRatio', 0),
-            'PB': info.get('priceToBook', 0),
-            'PS': info.get('priceToSalesTrailing12Months', 0),
-            '股息率(%)': info.get('dividendYield', 0) * 100 if info.get('dividendYield') else 0,
-            'ROE(%)': info.get('returnOnEquity', 0) * 100 if info.get('returnOnEquity') else 0,
-            'ROA(%)': info.get('returnOnAssets', 0) * 100 if info.get('returnOnAssets') else 0,
-            '毛利率(%)': info.get('grossMargins', 0) * 100 if info.get('grossMargins') else 0,
-            '净利率(%)': info.get('profitMargins', 0) * 100 if info.get('profitMargins') else 0,
-            '营收增长(%)': info.get('revenueGrowth', 0) * 100 if info.get('revenueGrowth') else 0,
-            '每股收益': info.get('trailingEps', 0),
-            '每股净资产': info.get('bookValue', 0),
-            '资产负债率(%)': info.get('debtToEquity', 0) if info.get('debtToEquity') else 0,
-            'Beta': info.get('beta', 0),
-            '52周高点': info.get('fiftyTwoWeekHigh', 0),
-            '52周低点': info.get('fiftyTwoWeekLow', 0),
-            '平均成交量': info.get('averageVolume', 0),
-            'forward_eps': info.get('forwardEps', 0),
-            'trailing_eps': info.get('trailingEps', 0),
-        }
-        
-        return fundamentals, info
-    except Exception as e:
-        if "Too Many Requests" in str(e):
-            st.warning("API限流，请稍后再试")
-        return None, None
-
-# ------------------------------------------------------------
 # Calculate forward earnings growth and PEG ratios
 # ------------------------------------------------------------
-def calculate_forward_metrics(df):
-    """Calculate EG1, EG2, PEG1, PEG2 based on earnings estimates"""
+def calculate_forward_metrics_simple(df):
+    """Calculate EG1 and PEG1 based on earnings estimates"""
     df = df.copy()
     
-    # Calculate PE ratios
-    df['PE1'] = df['最新价'] / df['trailing_eps'].replace(0, np.nan)
-    df['PE2'] = df['最新价'] / df['forward_eps'].replace(0, np.nan)
+    # Estimate market cap (in billions)
+    df['市值(亿)'] = df['最新价'] * df['成交量'] * 2 / 1e8
     
-    # Calculate EG1 (growth from trailing to forward EPS)
+    # Calculate PE ratios
+    df['PE0'] = df['最新价'] / df['trailing_eps'].replace(0, np.nan)
+    df['PE1'] = df['最新价'] / df['forward_eps'].replace(0, np.nan)
+    
     def calc_eg1(row):
         f0 = row['trailing_eps']
         f1 = row['forward_eps']
@@ -372,17 +364,8 @@ def calculate_forward_metrics(df):
         else:
             return ((f1 / f0) - 1) * 100
     
-    # Calculate EG2 (currently same as EG1 since we only have 2 periods)
-    def calc_eg2(row):
-        # For now, use same as EG1 since we don't have F2 estimates
-        return calc_eg1(row)
-    
     df['EG1'] = df.apply(calc_eg1, axis=1)
-    df['EG2'] = df.apply(calc_eg2, axis=1)
-    
-    # Calculate PEG ratios
     df['PEG1'] = df['PE1'] / df['EG1'].abs().replace(0, np.nan)
-    df['PEG2'] = df['PE2'] / df['EG2'].abs().replace(0, np.nan)
     
     return df
 
@@ -414,18 +397,26 @@ def main():
         st.image("https://img.icons8.com/color/96/000000/investment-portfolio.png", width=100)
         st.title("控制面板")
         
-        # Add a note about rate limiting
-        st.info("⚠️ Yahoo Finance API 有访问限制，基本面数据可能需要较长时间加载")
+        # Cache management
+        if st.button("🗑️ 清除基本面缓存", type="secondary"):
+            st.session_state.fundamentals_cache = None
+            st.cache_data.clear()
+            st.success("缓存已清除")
+            st.rerun()
+        
+        st.info("⚠️ 基本面数据首次加载需要30-60秒，之后缓存2小时")
         
         if st.button("🔄 刷新所有数据", type="primary"):
+            st.session_state.fundamentals_cache = None
             st.cache_data.clear()
             st.rerun()
+        
         st.markdown("---")
         st.markdown("### 数据源")
         st.info("📈 股价: Yahoo Finance")
         st.info("📊 成分股: universe.csv")
         st.info("📉 技术指标: MACD, KDJ, RSI, ATR, Bollinger")
-        st.info("📚 基本面: Yahoo Finance")
+        st.info("📚 基本面: 批量缓存 (2小时)")
         st.caption(f"最后更新: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
     constituents = load_constituents()
@@ -442,10 +433,8 @@ def main():
     st.markdown("---")
     st.markdown('<div class="section-header">🔍 个股深度研究</div>', unsafe_allow_html=True)
     
-    # Create a list of display options
     stock_options = df.apply(lambda x: f"{x['代码']} - {x['名称']}", axis=1).tolist()
     
-    # Use columns for better layout
     col1, col2, col3, col4 = st.columns([2, 1.5, 1, 1])
     
     with col1:
@@ -462,12 +451,10 @@ def main():
         )
     
     with col3:
-        # Display current price
         price = stock_info['最新价']
         st.metric("当前价格", f"{price:.2f}")
     
     with col4:
-        # Display daily movement
         change = stock_info['涨跌幅_1d']
         delta_color = "normal" if change > 0 else "inverse"
         st.metric("日涨跌幅", f"{change:+.2f}%", delta=f"{change:.2f}%", delta_color=delta_color)
@@ -477,19 +464,15 @@ def main():
         yf_ticker = code_to_yf(selected_code)
         
         with st.spinner("加载技术指标..."):
-            # Fetch historical data
             stock = yf.Ticker(yf_ticker)
             hist = stock.history(period=period)
             
             if not hist.empty and len(hist) > 30:
-                # Calculate all indicators
                 hist_with_indicators = calculate_all_indicators(hist)
                 latest = hist_with_indicators.iloc[-1]
                 
-                # Generate trading signals
                 signals, overall = generate_trading_signals(latest)
                 
-                # Display overall signal
                 signal_color = overall[3]
                 st.markdown(f"""
                 <div style="background-color: {signal_color}20; padding: 1rem; border-radius: 10px; border-left: 4px solid {signal_color}; margin: 1rem 0;">
@@ -497,11 +480,9 @@ def main():
                 </div>
                 """, unsafe_allow_html=True)
                 
-                # Create K线图 (Candlestick chart) - Separate chart
                 st.markdown("### 📊 K线图")
                 fig_k = go.Figure()
                 
-                # Candlestick
                 fig_k.add_trace(go.Candlestick(
                     x=hist_with_indicators.index,
                     open=hist_with_indicators['Open'],
@@ -512,7 +493,6 @@ def main():
                     showlegend=False
                 ))
                 
-                # Bollinger Bands
                 fig_k.add_trace(go.Scatter(
                     x=hist_with_indicators.index,
                     y=hist_with_indicators['BB_Upper'],
@@ -545,7 +525,6 @@ def main():
                 
                 st.plotly_chart(fig_k, use_container_width=True)
                 
-                # Create成交量图 (Volume chart) - Separate chart
                 st.markdown("### 📊 成交量图")
                 fig_v = go.Figure()
                 
@@ -570,7 +549,6 @@ def main():
                 
                 st.plotly_chart(fig_v, use_container_width=True)
                 
-                # Create technical indicators chart (MACD, KDJ, RSI, ATR)
                 st.markdown("### 📊 技术指标")
                 fig_tech = make_subplots(
                     rows=4, cols=1,
@@ -580,7 +558,6 @@ def main():
                     subplot_titles=('MACD', 'KDJ', 'RSI', 'ATR & Bollinger Width')
                 )
                 
-                # MACD
                 fig_tech.add_trace(go.Scatter(
                     x=hist_with_indicators.index,
                     y=hist_with_indicators['MACD'],
@@ -595,7 +572,6 @@ def main():
                     name='Signal'
                 ), row=1, col=1)
                 
-                # MACD Histogram
                 colors_macd = ['red' if x < 0 else 'green' for x in hist_with_indicators['MACD_Hist']]
                 fig_tech.add_trace(go.Bar(
                     x=hist_with_indicators.index,
@@ -606,7 +582,6 @@ def main():
                     showlegend=False
                 ), row=1, col=1)
                 
-                # KDJ
                 fig_tech.add_trace(go.Scatter(
                     x=hist_with_indicators.index,
                     y=hist_with_indicators['K'],
@@ -628,7 +603,6 @@ def main():
                     name='J'
                 ), row=2, col=1)
                 
-                # RSI with levels
                 fig_tech.add_trace(go.Scatter(
                     x=hist_with_indicators.index,
                     y=hist_with_indicators['RSI'],
@@ -636,12 +610,10 @@ def main():
                     name='RSI'
                 ), row=3, col=1)
                 
-                # RSI levels
                 fig_tech.add_hline(y=70, line_dash="dash", line_color="red", opacity=0.5, row=3, col=1)
                 fig_tech.add_hline(y=30, line_dash="dash", line_color="green", opacity=0.5, row=3, col=1)
                 fig_tech.add_hline(y=50, line_dash="dot", line_color="gray", opacity=0.3, row=3, col=1)
                 
-                # ATR and Bollinger Width
                 fig_tech.add_trace(go.Scatter(
                     x=hist_with_indicators.index,
                     y=hist_with_indicators['ATR_pct'],
@@ -668,7 +640,6 @@ def main():
                 
                 st.plotly_chart(fig_tech, use_container_width=True)
                 
-                # Signal Table
                 st.markdown("### 📊 技术信号汇总")
                 signal_df = pd.DataFrame(signals, columns=['指标', '信号', '强度'])
                 signal_df['强度'] = signal_df['强度'].map({2: '++', 1: '+', 0: '○', -1: '-', -2: '--'})
@@ -678,7 +649,6 @@ def main():
                     st.dataframe(signal_df, use_container_width=True, hide_index=True)
                 
                 with col2:
-                    # Latest indicator values
                     latest_df = pd.DataFrame({
                         '指标': ['MACD', '信号线', 'K值', 'D值', 'J值', 'RSI', 'ATR%', '布林带宽%', '布林位置%'],
                         '数值': [
@@ -697,133 +667,135 @@ def main():
             else:
                 st.warning(f"股票 {stock_info['名称']} 历史数据不足，无法计算技术指标")
 
-    # --- Fundamental Analysis Section ---
+    # --- Fundamental Analysis Section (Now using cached batch data) ---
     st.markdown('<div class="section-header">📚 基本面深度分析</div>', unsafe_allow_html=True)
     
-    if selected_code:
-        with st.spinner("加载基本面数据 (可能需要10-20秒)..."):
-            yf_ticker = code_to_yf(selected_code)
-            fundamentals, info = get_fundamental_data(yf_ticker)
+    # Load fundamentals in background if not cached
+    if st.session_state.fundamentals_cache is None and not st.session_state.fundamentals_loading:
+        st.session_state.fundamentals_loading = True
+        with st.spinner("首次加载基本面数据 (可能需要30-60秒，之后将缓存2小时)..."):
+            unique_tickers = df['yf_ticker'].unique().tolist()
+            st.session_state.fundamentals_cache = fetch_all_fundamentals(unique_tickers)
+            st.session_state.fundamentals_loading = False
+            st.success(f"✅ 已缓存 {len(st.session_state.fundamentals_cache)} 只股票的基本面数据")
+            st.rerun()
+    
+    # Display fundamental data for selected stock
+    if selected_code and st.session_state.fundamentals_cache is not None:
+        yf_ticker = code_to_yf(selected_code)
+        fundamentals = st.session_state.fundamentals_cache.get(yf_ticker)
+        
+        if fundamentals and any(v != 0 for v in fundamentals.values() if isinstance(v, (int, float))):
+            st.markdown("### 关键指标")
+            cols = st.columns(5)
+            metrics = [
+                ('市值(亿)', f"{fundamentals['市值(亿)']:.0f}" if fundamentals['市值(亿)'] > 0 else 'N/A'),
+                ('PE(TTM)', f"{fundamentals['PE(TTM)']:.2f}" if fundamentals['PE(TTM)'] > 0 else 'N/A'),
+                ('PE(滚动)', f"{fundamentals['PE(滚动)']:.2f}" if fundamentals['PE(滚动)'] > 0 else 'N/A'),
+                ('PB', f"{fundamentals['PB']:.2f}" if fundamentals['PB'] > 0 else 'N/A'),
+                ('ROE(%)', f"{fundamentals['ROE(%)']:.1f}%" if fundamentals['ROE(%)'] > 0 else 'N/A'),
+            ]
             
-            if fundamentals and any(value != 0 for value in fundamentals.values()):
-                # Key Metrics in columns
-                st.markdown("### 关键指标")
-                cols = st.columns(5)
-                metrics = [
-                    ('市值(亿)', f"{fundamentals['市值(亿)']:.0f}" if fundamentals['市值(亿)'] > 0 else 'N/A'),
-                    ('PE(TTM)', f"{fundamentals['PE(TTM)']:.2f}" if fundamentals['PE(TTM)'] > 0 else 'N/A'),
-                    ('PE(滚动)', f"{fundamentals['PE(滚动)']:.2f}" if fundamentals['PE(滚动)'] > 0 else 'N/A'),
-                    ('PB', f"{fundamentals['PB']:.2f}" if fundamentals['PB'] > 0 else 'N/A'),
-                    ('ROE(%)', f"{fundamentals['ROE(%)']:.1f}%" if fundamentals['ROE(%)'] > 0 else 'N/A'),
-                ]
-                
-                for idx, (label, value) in enumerate(metrics):
-                    with cols[idx]:
-                        st.markdown(f"""
-                        <div class="fundamental-card">
-                            <div style="color: #4B5563; font-size: 0.9rem;">{label}</div>
-                            <div style="color: #111827; font-size: 1.5rem; font-weight: bold;">{value}</div>
-                        </div>
-                        """, unsafe_allow_html=True)
-                
-                # Valuation & Profitability
-                st.markdown("### 💰 估值与盈利能力")
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    valuation_df = pd.DataFrame({
-                        '指标': ['PEG', 'PS', '股息率(%)', 'Beta', 'EPS(滚动)'],
-                        '数值': [
-                            f"{fundamentals['PEG']:.2f}" if fundamentals['PEG'] > 0 else 'N/A',
-                            f"{fundamentals['PS']:.2f}" if fundamentals['PS'] > 0 else 'N/A',
-                            f"{fundamentals['股息率(%)']:.2f}%" if fundamentals['股息率(%)'] > 0 else 'N/A',
-                            f"{fundamentals['Beta']:.2f}" if fundamentals['Beta'] > 0 else 'N/A',
-                            f"{fundamentals['每股收益']:.2f}" if fundamentals['每股收益'] > 0 else 'N/A'
-                        ]
-                    })
-                    st.dataframe(valuation_df, use_container_width=True, hide_index=True)
-                
-                with col2:
-                    profitability_df = pd.DataFrame({
-                        '指标': ['毛利率(%)', '净利率(%)', 'ROA(%)', '营收增长(%)', '资产负债率(%)'],
-                        '数值': [
-                            f"{fundamentals['毛利率(%)']:.1f}%" if fundamentals['毛利率(%)'] > 0 else 'N/A',
-                            f"{fundamentals['净利率(%)']:.1f}%" if fundamentals['净利率(%)'] > 0 else 'N/A',
-                            f"{fundamentals['ROA(%)']:.1f}%" if fundamentals['ROA(%)'] > 0 else 'N/A',
-                            f"{fundamentals['营收增长(%)']:.1f}%" if fundamentals['营收增长(%)'] > 0 else 'N/A',
-                            f"{fundamentals['资产负债率(%)']:.1f}%" if fundamentals['资产负债率(%)'] > 0 else 'N/A'
-                        ]
-                    })
-                    st.dataframe(profitability_df, use_container_width=True, hide_index=True)
-                
-                # Forward Earnings Estimates
-                st.markdown("### 📈 盈利预测")
-                col1, col2, col3 = st.columns(3)
-                
-                with col1:
+            for idx, (label, value) in enumerate(metrics):
+                with cols[idx]:
                     st.markdown(f"""
                     <div class="fundamental-card">
-                        <div style="color: #4B5563;">当前EPS</div>
-                        <div style="color: #111827; font-size: 1.3rem; font-weight: bold;">{fundamentals['每股收益']:.2f}</div>
+                        <div style="color: #4B5563; font-size: 0.9rem;">{label}</div>
+                        <div style="color: #111827; font-size: 1.5rem; font-weight: bold;">{value}</div>
                     </div>
                     """, unsafe_allow_html=True)
-                
-                with col2:
+            
+            st.markdown("### 💰 估值与盈利能力")
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                valuation_df = pd.DataFrame({
+                    '指标': ['PEG', 'PS', '股息率(%)', 'Beta', 'EPS(滚动)'],
+                    '数值': [
+                        f"{fundamentals['PEG']:.2f}" if fundamentals['PEG'] > 0 else 'N/A',
+                        f"{fundamentals['PS']:.2f}" if fundamentals['PS'] > 0 else 'N/A',
+                        f"{fundamentals['股息率(%)']:.2f}%" if fundamentals['股息率(%)'] > 0 else 'N/A',
+                        f"{fundamentals['Beta']:.2f}" if fundamentals['Beta'] > 0 else 'N/A',
+                        f"{fundamentals['每股收益']:.2f}" if fundamentals['每股收益'] > 0 else 'N/A'
+                    ]
+                })
+                st.dataframe(valuation_df, use_container_width=True, hide_index=True)
+            
+            with col2:
+                profitability_df = pd.DataFrame({
+                    '指标': ['毛利率(%)', '净利率(%)', 'ROA(%)', '营收增长(%)', '资产负债率(%)'],
+                    '数值': [
+                        f"{fundamentals['毛利率(%)']:.1f}%" if fundamentals['毛利率(%)'] > 0 else 'N/A',
+                        f"{fundamentals['净利率(%)']:.1f}%" if fundamentals['净利率(%)'] > 0 else 'N/A',
+                        f"{fundamentals['ROA(%)']:.1f}%" if fundamentals['ROA(%)'] > 0 else 'N/A',
+                        f"{fundamentals['营收增长(%)']:.1f}%" if fundamentals['营收增长(%)'] > 0 else 'N/A',
+                        f"{fundamentals['资产负债率(%)']:.1f}%" if fundamentals['资产负债率(%)'] > 0 else 'N/A'
+                    ]
+                })
+                st.dataframe(profitability_df, use_container_width=True, hide_index=True)
+            
+            st.markdown("### 📈 盈利预测")
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                st.markdown(f"""
+                <div class="fundamental-card">
+                    <div style="color: #4B5563;">当前EPS</div>
+                    <div style="color: #111827; font-size: 1.3rem; font-weight: bold;">{fundamentals['每股收益']:.2f}</div>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            with col2:
+                st.markdown(f"""
+                <div class="fundamental-card">
+                    <div style="color: #4B5563;">预期EPS</div>
+                    <div style="color: #111827; font-size: 1.3rem; font-weight: bold;">{fundamentals['forward_eps']:.2f}</div>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            with col3:
+                if fundamentals['每股收益'] > 0 and fundamentals['forward_eps'] > 0:
+                    growth = ((fundamentals['forward_eps'] / fundamentals['每股收益']) - 1) * 100
                     st.markdown(f"""
                     <div class="fundamental-card">
-                        <div style="color: #4B5563;">预期EPS</div>
-                        <div style="color: #111827; font-size: 1.3rem; font-weight: bold;">{fundamentals['forward_eps']:.2f}</div>
+                        <div style="color: #4B5563;">预期增长</div>
+                        <div style="color: {'#EF4444' if growth > 0 else '#10B981'}; font-size: 1.3rem; font-weight: bold;">{growth:.1f}%</div>
                     </div>
                     """, unsafe_allow_html=True)
+            
+            st.markdown("### 📊 价格水平")
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                current = stock_info['最新价']
+                high_52w = fundamentals['52周高点']
+                low_52w = fundamentals['52周低点']
                 
-                with col3:
-                    if fundamentals['每股收益'] > 0 and fundamentals['forward_eps'] > 0:
-                        growth = ((fundamentals['forward_eps'] / fundamentals['每股收益']) - 1) * 100
-                        st.markdown(f"""
-                        <div class="fundamental-card">
-                            <div style="color: #4B5563;">预期增长</div>
-                            <div style="color: {'#EF4444' if growth > 0 else '#10B981'}; font-size: 1.3rem; font-weight: bold;">{growth:.1f}%</div>
-                        </div>
-                        """, unsafe_allow_html=True)
-                
-                # Price Levels
-                st.markdown("### 📊 价格水平")
-                col1, col2, col3 = st.columns(3)
-                
-                with col1:
-                    current = stock_info['最新价']
-                    high_52w = fundamentals['52周高点']
-                    low_52w = fundamentals['52周低点']
+                if high_52w > 0:
+                    from_high = ((high_52w - current) / high_52w) * 100
+                    from_low = ((current - low_52w) / low_52w) * 100
                     
-                    if high_52w > 0:
-                        from_high = ((high_52w - current) / high_52w) * 100
-                        from_low = ((current - low_52w) / low_52w) * 100
-                        
-                        st.markdown(f"""
-                        <div class="fundamental-card">
-                            <div style="color: #4B5563;">当前价格: <span style="color: #111827; font-weight: bold;">{current:.2f}</span></div>
-                            <div style="color: #4B5563;">52周高点: <span style="color: #111827;">{high_52w:.2f}</span> <span style="color: #EF4444;">(距离 {from_high:.1f}%)</span></div>
-                            <div style="color: #4B5563;">52周低点: <span style="color: #111827;">{low_52w:.2f}</span> <span style="color: #10B981;">(距离 {from_low:.1f}%)</span></div>
-                        </div>
-                        """, unsafe_allow_html=True)
-                
-                # Business Summary
-                if info and 'longBusinessSummary' in info:
-                    with st.expander("公司业务概览"):
-                        st.write(info['longBusinessSummary'])
-            else:
-                st.warning("""
-                ⚠️ 无法获取基本面数据 - Yahoo Finance API 访问限制
-                
-                可能的原因:
-                - API 请求次数过多，请稍后再试
-                - 该股票可能没有完整的基本面数据
-                - 网络连接问题
-                
-                技术指标分析仍然可用，请继续使用上方的技术分析功能。
-                """)
-    else:
-        st.info("请先选择一只股票进行基本面分析")
+                    st.markdown(f"""
+                    <div class="fundamental-card">
+                        <div style="color: #4B5563;">当前价格: <span style="color: #111827; font-weight: bold;">{current:.2f}</span></div>
+                        <div style="color: #4B5563;">52周高点: <span style="color: #111827;">{high_52w:.2f}</span> <span style="color: #EF4444;">(距离 {from_high:.1f}%)</span></div>
+                        <div style="color: #4B5563;">52周低点: <span style="color: #111827;">{low_52w:.2f}</span> <span style="color: #10B981;">(距离 {from_low:.1f}%)</span></div>
+                    </div>
+                    """, unsafe_allow_html=True)
+            
+            if fundamentals.get('longBusinessSummary'):
+                with st.expander("公司业务概览"):
+                    st.write(fundamentals['longBusinessSummary'])
+        else:
+            st.warning("""
+            ⚠️ 无法获取基本面数据 - 可能原因:
+            - 该股票没有完整的基本面数据
+            - 缓存仍在加载中
+            
+            请稍等片刻或选择其他股票。技术指标分析仍然可用。
+            """)
+    elif selected_code:
+        st.info("⏳ 正在加载基本面数据缓存，请稍候...")
 
     # --- Index charts with EMAs ---
     st.markdown("### 📈 主要指数技术分析")
@@ -888,11 +860,6 @@ def main():
     # --- Multi-Period Sector Rotation Analysis ---
     st.markdown('<div class="section-header">🔄 多周期板块轮动分析</div>', unsafe_allow_html=True)
     
-    # Check if the volume figures are different for each period
-    vol_1d = df['成交量'].sum()
-    vol_1w = df['成交量'].mean() * 5  # Approximate weekly volume
-    vol_1m = df['成交量'].mean() * 21  # Approximate monthly volume
-    
     sector_stats = df.groupby('板块').agg({
         '涨跌幅_1d': ['mean', 'std'],
         '涨跌幅_1w': ['mean', 'std'],
@@ -910,7 +877,6 @@ def main():
     sector_stats = sector_stats.reset_index()
     sector_stats['成交额(亿)'] = sector_stats['总成交额'].round(2)
     
-    # Add estimated volumes for different periods
     sector_stats['1d_成交额'] = sector_stats['成交额(亿)']
     sector_stats['1w_成交额'] = (sector_stats['成交额(亿)'] * 5).round(2)
     sector_stats['1m_成交额'] = (sector_stats['成交额(亿)'] * 21).round(2)
@@ -964,9 +930,8 @@ def main():
     # --- Sector Momentum Comparison ---
     st.markdown('<div class="section-header">📊 板块动量对比</div>', unsafe_allow_html=True)
     
-    # Show ALL sectors, not just top 15
     momentum_df = sector_stats[['板块', '1d_平均涨跌幅', '1w_平均涨跌幅', '1m_平均涨跌幅']].copy()
-    momentum_df = momentum_df.sort_values('1m_平均涨跌幅', ascending=False)  # No head(15) - show all
+    momentum_df = momentum_df.sort_values('1m_平均涨跌幅', ascending=False)
     
     momentum_melted = momentum_df.melt(
         id_vars=['板块'],
@@ -980,7 +945,6 @@ def main():
         '1m_平均涨跌幅': '1月'
     })
     
-    # Use a more colorful palette with better contrast
     fig = px.bar(
         momentum_melted,
         x='板块',
@@ -989,10 +953,10 @@ def main():
         barmode='group',
         title='全板块多周期动量对比',
         labels={'涨跌幅': '涨跌幅 (%)', '板块': ''},
-        color_discrete_sequence=['#1E88E5', '#FFC107', '#DC143C']  # Blue, Amber, Crimson - better contrast
+        color_discrete_sequence=['#1E88E5', '#FFC107', '#DC143C']
     )
     fig.update_layout(
-        height=max(400, len(momentum_df) * 20),  # Dynamic height based on number of sectors
+        height=max(400, len(momentum_df) * 20),
         xaxis_tickangle=-45
     )
     st.plotly_chart(fig, use_container_width=True)
@@ -1000,113 +964,66 @@ def main():
     # --- Advanced Stock Selection with PEG and Growth Criteria ---
     st.markdown('<div class="section-header">🎯 基本面精选股 (PEG & 增长筛选)</div>', unsafe_allow_html=True)
 
-    # Adjusted market cap options based on actual data distribution
     market_cap_options = {
         "全部": (0, float('inf')),
-        "微盘股(<10亿)": (0, 10),        # Below median
-        "小盘股(10-50亿)": (10, 50),      # Median to 2x median
-        "中盘股(50-150亿)": (50, 150),    # Upper quartile range
-        "大盘股(>150亿)": (150, float('inf'))  # Top end
+        "微盘股(<10亿)": (0, 10),
+        "小盘股(10-50亿)": (10, 50),
+        "中盘股(50-150亿)": (50, 150),
+        "大盘股(>150亿)": (150, float('inf'))
     }
     
     col1, col2 = st.columns([1, 1])
     with col1:
-        selected_mcap_range = st.selectbox("选择市值范围", list(market_cap_options.keys()), index=2)  # Default to 10-50亿
+        selected_mcap_range = st.selectbox("选择市值范围", list(market_cap_options.keys()), index=2)
     
-    # Calculate forward metrics (simplified - only use EG1)
-    def calculate_forward_metrics_simple(df):
-        """Calculate EG1 and PEG1 based on earnings estimates"""
-        df = df.copy()
-        
-        # Estimate market cap (in billions)
-        df['市值(亿)'] = df['最新价'] * df['成交量'] * 2 / 1e8  # Rough estimate using average of 2 days volume
-        
-        # Calculate PE ratios
-        df['PE0'] = df['最新价'] / df['trailing_eps'].replace(0, np.nan)  # Current P/E (was PE1)
-        df['PE1'] = df['最新价'] / df['forward_eps'].replace(0, np.nan)   # Forward P/E (was PE2)
-        
-        # Calculate EG1 (growth from trailing to forward EPS)
-        def calc_eg1(row):
-            f0 = row['trailing_eps']
-            f1 = row['forward_eps']
-            if pd.isna(f0) or pd.isna(f1) or f0 == 0:
-                return np.nan
-            if f0 >= 0 >= f1:
-                return -100
-            elif f0 <= 0 < f1:
-                return 100
-            elif f0 < 0 and f1 <= 0:
-                return -((f1 / f0) - 1) * 100
-            else:
-                return ((f1 / f0) - 1) * 100
-        
-        df['EG1'] = df.apply(calc_eg1, axis=1)
-        
-        # Calculate PEG ratio (using forward P/E)
-        df['PEG1'] = df['PE1'] / df['EG1'].abs().replace(0, np.nan)
-        
-        return df
-    
-    # Apply calculations
     df_with_metrics = calculate_forward_metrics_simple(df)
     
-    # Apply market cap filter
     min_mcap, max_mcap = market_cap_options[selected_mcap_range]
     if max_mcap != float('inf'):
         df_filtered = df_with_metrics[(df_with_metrics['市值(亿)'] >= min_mcap) & (df_with_metrics['市值(亿)'] <= max_mcap)]
     else:
         df_filtered = df_with_metrics[df_with_metrics['市值(亿)'] >= min_mcap]
     
-    # Drop rows with missing data
     df_clean = df_filtered.dropna(subset=['最新价', 'trailing_eps', 'forward_eps', 'PE0', 'PE1', 'EG1', 'PEG1'])
     
     if not df_clean.empty:
-        # Display market cap range info
         mcap_info = f"当前筛选: {selected_mcap_range}"
         if min_mcap > 0:
-            mcap_info += f" ({min_mcap}-{max_mcap if max_mcap != float('inf') else '∞'}亿)"
+            mcap_info += f" ({min_mcap:.0f}-{max_mcap if max_mcap != float('inf') else '∞'}亿)"
         st.caption(mcap_info)
         
         selected_universe = pd.DataFrame()
         sectors = df_clean['板块'].unique()
         
-        # Apply filtering criteria per sector
         for curr_sector in sectors:
             curr_universe = df_clean[df_clean['板块'] == curr_sector].copy()
             
             if curr_universe.empty:
                 continue
                 
-            # Calculate sector medians
             sector_pe0 = curr_universe['PE0'].median()
             sector_pe1 = curr_universe['PE1'].median()
             sector_eg1 = curr_universe['EG1'].median()
             
-            # PE conditions
-            pe_condition = curr_universe['PE0'] > curr_universe['PE1']  # Forward P/E lower than current P/E
-            pe_condition &= curr_universe['PE0'] > sector_pe0  # Current P/E above sector median
-            pe_condition &= curr_universe['PE1'] > sector_pe1  # Forward P/E above sector median
+            pe_condition = curr_universe['PE0'] > curr_universe['PE1']
+            pe_condition &= curr_universe['PE0'] > sector_pe0
+            pe_condition &= curr_universe['PE1'] > sector_pe1
             
-            # Growth condition - positive growth and above sector median
-            eg_condition = curr_universe['EG1'] > 0  # Positive expected growth
-            eg_condition &= curr_universe['EG1'] > sector_eg1  # Growth above sector median
+            eg_condition = curr_universe['EG1'] > 0
+            eg_condition &= curr_universe['EG1'] > sector_eg1
             
-            # PEG condition
-            peg_condition = curr_universe['PEG1'] < 1  # PEG < 1 (undervalued relative to growth)
-            peg_condition &= curr_universe['PEG1'] > 0  # Positive PEG
+            peg_condition = curr_universe['PEG1'] < 1
+            peg_condition &= curr_universe['PEG1'] > 0
             
-            # Combine all conditions
             curr_selected_universe = curr_universe[pe_condition & eg_condition & peg_condition]
             
             if not curr_selected_universe.empty:
                 selected_universe = pd.concat([selected_universe, curr_selected_universe])
         
         if not selected_universe.empty:
-            # Display results
             display_cols = ['代码', '名称', '板块', '最新价', '市值(亿)', '涨跌幅_1d', 'PE0', 'PE1', 'EG1', 'PEG1']
             display_df = selected_universe[display_cols].copy()
             
-            # Format columns
             display_df['涨跌幅_1d'] = display_df['涨跌幅_1d'].apply(lambda x: f"{x:.2f}%")
             display_df['市值(亿)'] = display_df['市值(亿)'].apply(lambda x: f"{x:.0f}")
             display_df['PE0'] = display_df['PE0'].apply(lambda x: f"{x:.2f}")
@@ -1117,7 +1034,6 @@ def main():
             st.success(f"找到 {len(selected_universe)} 只符合PEG<1且增长为正的股票 (市值范围: {selected_mcap_range})")
             st.dataframe(display_df, use_container_width=True, hide_index=True)
             
-            # Summary statistics
             st.markdown("### 📊 筛选条件说明")
             st.info("""
             **筛选逻辑:**
@@ -1137,7 +1053,6 @@ def main():
     else:
         st.warning(f"在{selected_mcap_range}范围内，EPS数据不足，无法进行PEG筛选")
     
-    # Add a note about market cap distribution
     if not df_with_metrics.empty:
         mcap_stats = df_with_metrics['市值(亿)'].describe()
         st.caption(f"📊 全市场市值分布: 平均 {mcap_stats['mean']:.0f}亿 | 中位数 {mcap_stats['50%']:.0f}亿 | 最小 {mcap_stats['min']:.0f}亿 | 最大 {mcap_stats['max']:.0f}亿")
@@ -1150,7 +1065,6 @@ def main():
     else:
         sector_df = df.copy()
 
-    # Avoid division by zero in scoring
     if sector_df['涨跌幅_1d'].std() > 0:
         sector_df['动量分'] = (sector_df['涨跌幅_1d'] - sector_df['涨跌幅_1d'].mean()) / sector_df['涨跌幅_1d'].std()
     else:
@@ -1266,7 +1180,7 @@ def main():
     <div style="text-align:center; color:#666; font-size:0.8rem;">
         数据来源: Yahoo Finance | 成分股列表: universe.csv | 对冲基金级分析系统 v3.0<br>
         技术指标: MACD(12,26,9) | KDJ(9,3,3) | RSI(14) | ATR(14) | Bollinger Bands(20,2)<br>
-        基本面: 当前EPS, 预期EPS, PEG, 增长加速筛选<br>
+        基本面: 批量缓存 (2小时), 当前EPS, 预期EPS, PEG, 增长筛选<br>
         更新: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
     </div>
     """, unsafe_allow_html=True)
