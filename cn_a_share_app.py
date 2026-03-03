@@ -12,7 +12,7 @@ import random
 
 st.set_page_config(layout="wide", page_title="CSI 800 + CSI 1000 Dashboard", page_icon="📊")
 
-# Custom CSS - UPDATED with better contrast
+# Custom CSS
 st.markdown("""
 <style>
     .main-header { font-size: 2.5rem; color: #1E3A8A; font-weight: 800; text-align: center; }
@@ -25,7 +25,6 @@ st.markdown("""
     .signal-buy { background-color: #10B981; color: white; padding: 0.2rem 0.5rem; border-radius: 4px; font-weight: bold; }
     .signal-sell { background-color: #EF4444; color: white; padding: 0.2rem 0.5rem; border-radius: 4px; font-weight: bold; }
     .signal-neutral { background-color: #F59E0B; color: white; padding: 0.2rem 0.5rem; border-radius: 4px; font-weight: bold; }
-    /* FIXED: Fundamental card with better contrast */
     .fundamental-card { 
         background-color: #ffffff; 
         padding: 1rem; 
@@ -79,7 +78,7 @@ def fetch_realtime_stocks(ticker_list):
     total = len(ticker_list)
     
     end_date = datetime.now()
-    start_date_1m = (end_date - timedelta(days=35)).strftime('%Y-%m-%d')
+    start_date_3m = (end_date - timedelta(days=95)).strftime('%Y-%m-%d')  # Get 3 months for better 1m calculation
     
     for i, (code, name, sector) in enumerate(ticker_list):
         status.text(f"获取 {i+1}/{total}: {name}")
@@ -89,21 +88,30 @@ def fetch_realtime_stocks(ticker_list):
             time.sleep(random.uniform(0.1, 0.3))
             
             stock = yf.Ticker(yf_ticker)
-            hist = stock.history(start=start_date_1m, end=end_date.strftime('%Y-%m-%d'))
             
-            if not hist.empty and len(hist) >= 5:
+            # Get stock info for fundamental data
+            stock_info = stock.info
+            trailing_eps = stock_info.get('trailingEps', 0)
+            forward_eps = stock_info.get('forwardEps', 0)
+            
+            hist = stock.history(start=start_date_3m, end=end_date.strftime('%Y-%m-%d'))
+            
+            if not hist.empty and len(hist) >= 20:  # Need at least 20 days for 1m
                 last = hist.iloc[-1]
                 
-                # Calculate returns
+                # Calculate returns for different periods
+                # 1d return
                 ret_1d = ((last['Close'] - hist.iloc[-2]['Close']) / hist.iloc[-2]['Close']) * 100 if len(hist) >= 2 else 0
-                ret_1w = ((last['Close'] - hist.iloc[-5]['Close']) / hist.iloc[-5]['Close']) * 100 if len(hist) >= 5 else ret_1d
                 
-                if len(hist) >= 20:
-                    ret_1m = ((last['Close'] - hist.iloc[-20]['Close']) / hist.iloc[-20]['Close']) * 100
-                elif len(hist) >= 10:
-                    ret_1m = ((last['Close'] - hist.iloc[0]['Close']) / hist.iloc[0]['Close']) * 100
-                else:
-                    ret_1m = ret_1w
+                # 1w return (5 trading days)
+                ret_1w = ((last['Close'] - hist.iloc[-6]['Close']) / hist.iloc[-6]['Close']) * 100 if len(hist) >= 6 else ret_1d
+                
+                # 1m return (21 trading days - approx 1 month)
+                ret_1m = ((last['Close'] - hist.iloc[-22]['Close']) / hist.iloc[-22]['Close']) * 100 if len(hist) >= 22 else ret_1w
+                
+                # Calculate forward P/E metrics
+                pe1 = last['Close'] / trailing_eps if trailing_eps and trailing_eps > 0 else None
+                pe2 = last['Close'] / forward_eps if forward_eps and forward_eps > 0 else None
                 
                 stocks.append({
                     '代码': code,
@@ -116,6 +124,10 @@ def fetch_realtime_stocks(ticker_list):
                     '涨跌幅_1m': round(ret_1m, 2),
                     '成交量': last['Volume'],
                     '成交额(亿)': round(last['Volume'] * last['Close'] / 1e8, 2),
+                    'trailing_eps': trailing_eps,
+                    'forward_eps': forward_eps,
+                    'pe1': pe1,  # P/E based on trailing EPS
+                    'pe2': pe2,  # P/E based on forward EPS
                 })
         except Exception as e:
             # If rate limited, skip and continue
@@ -324,6 +336,8 @@ def get_fundamental_data(yf_ticker):
             '52周高点': info.get('fiftyTwoWeekHigh', 0),
             '52周低点': info.get('fiftyTwoWeekLow', 0),
             '平均成交量': info.get('averageVolume', 0),
+            'forward_eps': info.get('forwardEps', 0),
+            'trailing_eps': info.get('trailingEps', 0),
         }
         
         return fundamentals, info
@@ -331,6 +345,46 @@ def get_fundamental_data(yf_ticker):
         if "Too Many Requests" in str(e):
             st.warning("API限流，请稍后再试")
         return None, None
+
+# ------------------------------------------------------------
+# Calculate forward earnings growth and PEG ratios
+# ------------------------------------------------------------
+def calculate_forward_metrics(df):
+    """Calculate EG1, EG2, PEG1, PEG2 based on earnings estimates"""
+    df = df.copy()
+    
+    # Calculate PE ratios
+    df['PE1'] = df['最新价'] / df['trailing_eps'].replace(0, np.nan)
+    df['PE2'] = df['最新价'] / df['forward_eps'].replace(0, np.nan)
+    
+    # Calculate EG1 (growth from trailing to forward EPS)
+    def calc_eg1(row):
+        f0 = row['trailing_eps']
+        f1 = row['forward_eps']
+        if pd.isna(f0) or pd.isna(f1) or f0 == 0:
+            return np.nan
+        if f0 >= 0 >= f1:
+            return -100
+        elif f0 <= 0 < f1:
+            return 100
+        elif f0 < 0 and f1 <= 0:
+            return -((f1 / f0) - 1) * 100
+        else:
+            return ((f1 / f0) - 1) * 100
+    
+    # Calculate EG2 (currently same as EG1 since we only have 2 periods)
+    def calc_eg2(row):
+        # For now, use same as EG1 since we don't have F2 estimates
+        return calc_eg1(row)
+    
+    df['EG1'] = df.apply(calc_eg1, axis=1)
+    df['EG2'] = df.apply(calc_eg2, axis=1)
+    
+    # Calculate PEG ratios
+    df['PEG1'] = df['PE1'] / df['EG1'].abs().replace(0, np.nan)
+    df['PEG2'] = df['PE2'] / df['EG2'].abs().replace(0, np.nan)
+    
+    return df
 
 # ------------------------------------------------------------
 # Index historical data with EMAs
@@ -652,12 +706,13 @@ def main():
             fundamentals, info = get_fundamental_data(yf_ticker)
             
             if fundamentals and any(value != 0 for value in fundamentals.values()):
-                # Key Metrics in columns - FIXED with proper styling
+                # Key Metrics in columns
                 st.markdown("### 关键指标")
-                cols = st.columns(4)
+                cols = st.columns(5)
                 metrics = [
                     ('市值(亿)', f"{fundamentals['市值(亿)']:.0f}" if fundamentals['市值(亿)'] > 0 else 'N/A'),
                     ('PE(TTM)', f"{fundamentals['PE(TTM)']:.2f}" if fundamentals['PE(TTM)'] > 0 else 'N/A'),
+                    ('PE(滚动)', f"{fundamentals['PE(滚动)']:.2f}" if fundamentals['PE(滚动)'] > 0 else 'N/A'),
                     ('PB', f"{fundamentals['PB']:.2f}" if fundamentals['PB'] > 0 else 'N/A'),
                     ('ROE(%)', f"{fundamentals['ROE(%)']:.1f}%" if fundamentals['ROE(%)'] > 0 else 'N/A'),
                 ]
@@ -677,13 +732,13 @@ def main():
                 
                 with col1:
                     valuation_df = pd.DataFrame({
-                        '指标': ['PE(滚动)', 'PEG', 'PS', '股息率(%)', 'Beta'],
+                        '指标': ['PEG', 'PS', '股息率(%)', 'Beta', 'EPS(滚动)'],
                         '数值': [
-                            f"{fundamentals['PE(滚动)']:.2f}" if fundamentals['PE(滚动)'] > 0 else 'N/A',
                             f"{fundamentals['PEG']:.2f}" if fundamentals['PEG'] > 0 else 'N/A',
                             f"{fundamentals['PS']:.2f}" if fundamentals['PS'] > 0 else 'N/A',
                             f"{fundamentals['股息率(%)']:.2f}%" if fundamentals['股息率(%)'] > 0 else 'N/A',
-                            f"{fundamentals['Beta']:.2f}" if fundamentals['Beta'] > 0 else 'N/A'
+                            f"{fundamentals['Beta']:.2f}" if fundamentals['Beta'] > 0 else 'N/A',
+                            f"{fundamentals['每股收益']:.2f}" if fundamentals['每股收益'] > 0 else 'N/A'
                         ]
                     })
                     st.dataframe(valuation_df, use_container_width=True, hide_index=True)
@@ -701,8 +756,38 @@ def main():
                     })
                     st.dataframe(profitability_df, use_container_width=True, hide_index=True)
                 
-                # Price Levels - FIXED with proper styling
-                st.markdown("### 📈 价格水平")
+                # Forward Earnings Estimates
+                st.markdown("### 📈 盈利预测")
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    st.markdown(f"""
+                    <div class="fundamental-card">
+                        <div style="color: #4B5563;">当前EPS</div>
+                        <div style="color: #111827; font-size: 1.3rem; font-weight: bold;">{fundamentals['每股收益']:.2f}</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                
+                with col2:
+                    st.markdown(f"""
+                    <div class="fundamental-card">
+                        <div style="color: #4B5563;">预期EPS</div>
+                        <div style="color: #111827; font-size: 1.3rem; font-weight: bold;">{fundamentals['forward_eps']:.2f}</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                
+                with col3:
+                    if fundamentals['每股收益'] > 0 and fundamentals['forward_eps'] > 0:
+                        growth = ((fundamentals['forward_eps'] / fundamentals['每股收益']) - 1) * 100
+                        st.markdown(f"""
+                        <div class="fundamental-card">
+                            <div style="color: #4B5563;">预期增长</div>
+                            <div style="color: {'#EF4444' if growth > 0 else '#10B981'}; font-size: 1.3rem; font-weight: bold;">{growth:.1f}%</div>
+                        </div>
+                        """, unsafe_allow_html=True)
+                
+                # Price Levels
+                st.markdown("### 📊 价格水平")
                 col1, col2, col3 = st.columns(3)
                 
                 with col1:
@@ -803,6 +888,11 @@ def main():
     # --- Multi-Period Sector Rotation Analysis ---
     st.markdown('<div class="section-header">🔄 多周期板块轮动分析</div>', unsafe_allow_html=True)
     
+    # Check if the volume figures are different for each period
+    vol_1d = df['成交量'].sum()
+    vol_1w = df['成交量'].mean() * 5  # Approximate weekly volume
+    vol_1m = df['成交量'].mean() * 21  # Approximate monthly volume
+    
     sector_stats = df.groupby('板块').agg({
         '涨跌幅_1d': ['mean', 'std'],
         '涨跌幅_1w': ['mean', 'std'],
@@ -820,12 +910,17 @@ def main():
     sector_stats = sector_stats.reset_index()
     sector_stats['成交额(亿)'] = sector_stats['总成交额'].round(2)
     
+    # Add estimated volumes for different periods
+    sector_stats['1d_成交额'] = sector_stats['成交额(亿)']
+    sector_stats['1w_成交额'] = (sector_stats['成交额(亿)'] * 5).round(2)
+    sector_stats['1m_成交额'] = (sector_stats['成交额(亿)'] * 21).round(2)
+    
     period_tabs = st.tabs(["1日表现", "1周表现", "1月表现"])
     
-    for idx, (period, ret_col) in enumerate([
-        ("1日", "1d_平均涨跌幅"),
-        ("1周", "1w_平均涨跌幅"),
-        ("1月", "1m_平均涨跌幅")
+    for idx, (period, ret_col, vol_col) in enumerate([
+        ("1日", "1d_平均涨跌幅", "1d_成交额"),
+        ("1周", "1w_平均涨跌幅", "1w_成交额"),
+        ("1月", "1m_平均涨跌幅", "1m_成交额")
     ]):
         with period_tabs[idx]:
             col1, col2 = st.columns([1, 1])
@@ -834,13 +929,14 @@ def main():
                 fig = px.scatter(
                     sector_stats,
                     x=ret_col,
-                    y='成交额(亿)',
+                    y=vol_col,
                     size='成分股数',
                     color=ret_col,
                     text='板块',
                     title=f'板块轮动气泡图 ({period}表现)',
                     color_continuous_scale='RdYlGn',
-                    size_max=50
+                    size_max=50,
+                    labels={ret_col: f'平均涨跌幅 (%)', vol_col: f'成交额 (亿)'}
                 )
                 fig.update_traces(textposition='top center')
                 fig.update_layout(height=500)
@@ -848,7 +944,7 @@ def main():
             
             with col2:
                 display_df = sector_stats[[
-                    '板块', ret_col, f'{ret_col.split("_")[0]}_波动率', '成分股数', '成交额(亿)'
+                    '板块', ret_col, f'{ret_col.split("_")[0]}_波动率', '成分股数', vol_col
                 ]].copy()
                 display_df.columns = ['板块', '平均涨跌幅(%)', '波动率', '成分股数', '成交额(亿)']
                 display_df = display_df.sort_values('平均涨跌幅(%)', ascending=False)
@@ -856,6 +952,7 @@ def main():
                 display_df_display = display_df.copy()
                 display_df_display['平均涨跌幅(%)'] = display_df_display['平均涨跌幅(%)'].apply(lambda x: f"{x:.2f}%")
                 display_df_display['波动率'] = display_df_display['波动率'].apply(lambda x: f"{x:.2f}%")
+                display_df_display['成交额(亿)'] = display_df_display['成交额(亿)'].apply(lambda x: f"{x:.0f}")
                 
                 st.dataframe(
                     display_df_display,
@@ -867,8 +964,9 @@ def main():
     # --- Sector Momentum Comparison ---
     st.markdown('<div class="section-header">📊 板块动量对比</div>', unsafe_allow_html=True)
     
+    # Show ALL sectors, not just top 15
     momentum_df = sector_stats[['板块', '1d_平均涨跌幅', '1w_平均涨跌幅', '1m_平均涨跌幅']].copy()
-    momentum_df = momentum_df.sort_values('1m_平均涨跌幅', ascending=False).head(15)
+    momentum_df = momentum_df.sort_values('1m_平均涨跌幅', ascending=False)  # No head(15) - show all
     
     momentum_melted = momentum_df.melt(
         id_vars=['板块'],
@@ -882,18 +980,154 @@ def main():
         '1m_平均涨跌幅': '1月'
     })
     
+    # Use a more colorful palette with better contrast
     fig = px.bar(
         momentum_melted,
         x='板块',
         y='涨跌幅',
         color='周期',
         barmode='group',
-        title='前15板块多周期动量对比',
+        title='全板块多周期动量对比',
         labels={'涨跌幅': '涨跌幅 (%)', '板块': ''},
-        color_discrete_sequence=['#FF6B6B', '#4ECDC4', '#45B7D1']
+        color_discrete_sequence=['#1E88E5', '#FFC107', '#DC143C']  # Blue, Amber, Crimson - better contrast
     )
-    fig.update_layout(height=500)
+    fig.update_layout(
+        height=max(400, len(momentum_df) * 20),  # Dynamic height based on number of sectors
+        xaxis_tickangle=-45
+    )
     st.plotly_chart(fig, use_container_width=True)
+
+    # --- Advanced Stock Selection with PEG and Growth Criteria ---
+    st.markdown('<div class="section-header">🎯 基本面精选股 (PEG & 增长筛选)</div>', unsafe_allow_html=True)
+    
+    # Calculate forward metrics (simplified - only use EG1)
+    def calculate_forward_metrics_simple(df):
+        """Calculate EG1 and PEG1 based on earnings estimates"""
+        df = df.copy()
+        
+        # Calculate PE ratios
+        df['PE1'] = df['最新价'] / df['trailing_eps'].replace(0, np.nan)
+        df['PE2'] = df['最新价'] / df['forward_eps'].replace(0, np.nan)
+        
+        # Calculate EG1 (growth from trailing to forward EPS)
+        def calc_eg1(row):
+            f0 = row['trailing_eps']
+            f1 = row['forward_eps']
+            if pd.isna(f0) or pd.isna(f1) or f0 == 0:
+                return np.nan
+            if f0 >= 0 >= f1:
+                return -100
+            elif f0 <= 0 < f1:
+                return 100
+            elif f0 < 0 and f1 <= 0:
+                return -((f1 / f0) - 1) * 100
+            else:
+                return ((f1 / f0) - 1) * 100
+        
+        df['EG1'] = df.apply(calc_eg1, axis=1)
+        
+        # Calculate PEG ratio
+        df['PEG1'] = df['PE1'] / df['EG1'].abs().replace(0, np.nan)
+        
+        return df
+    
+    # Apply calculations
+    df_with_metrics = calculate_forward_metrics_simple(df)
+    
+    # Drop rows with missing data
+    df_clean = df_with_metrics.dropna(subset=['最新价', 'trailing_eps', 'forward_eps', 'PE1', 'PE2', 'EG1', 'PEG1'])
+    
+    if not df_clean.empty:
+        selected_universe = pd.DataFrame()
+        sectors = df_clean['板块'].unique()
+        
+        # Apply filtering criteria per sector
+        for curr_sector in sectors:
+            curr_universe = df_clean[df_clean['板块'] == curr_sector].copy()
+            
+            if curr_universe.empty:
+                continue
+                
+            # Calculate sector medians
+            sector_pe1 = curr_universe['PE1'].median()
+            sector_pe2 = curr_universe['PE2'].median()
+            sector_eg1 = curr_universe['EG1'].median()
+            
+            # PE conditions
+            pe_condition = curr_universe['PE1'] > curr_universe['PE2']  # Forward P/E lower than current P/E
+            pe_condition &= curr_universe['PE1'] > sector_pe1  # Current P/E above sector median
+            pe_condition &= curr_universe['PE2'] > sector_pe2  # Forward P/E above sector median
+            
+            # Growth condition - positive growth and above sector median
+            eg_condition = curr_universe['EG1'] > 0  # Positive expected growth
+            eg_condition &= curr_universe['EG1'] > sector_eg1  # Growth above sector median
+            
+            # PEG condition
+            peg_condition = curr_universe['PEG1'] < 1  # PEG < 1 (undervalued relative to growth)
+            peg_condition &= curr_universe['PEG1'] > 0  # Positive PEG
+            
+            # Combine all conditions
+            curr_selected_universe = curr_universe[pe_condition & eg_condition & peg_condition]
+            
+            if not curr_selected_universe.empty:
+                selected_universe = pd.concat([selected_universe, curr_selected_universe])
+        
+        if not selected_universe.empty:
+            # Display results
+            display_cols = ['代码', '名称', '板块', '最新价', '涨跌幅_1d', 'PE1', 'PE2', 'EG1', 'PEG1']
+            display_df = selected_universe[display_cols].copy()
+            
+            # Format columns
+            display_df['涨跌幅_1d'] = display_df['涨跌幅_1d'].apply(lambda x: f"{x:.2f}%")
+            display_df['PE1'] = display_df['PE1'].apply(lambda x: f"{x:.2f}")
+            display_df['PE2'] = display_df['PE2'].apply(lambda x: f"{x:.2f}")
+            display_df['EG1'] = display_df['EG1'].apply(lambda x: f"{x:.1f}%")
+            display_df['PEG1'] = display_df['PEG1'].apply(lambda x: f"{x:.2f}")
+            
+            st.success(f"找到 {len(selected_universe)} 只符合PEG<1且增长为正的股票")
+            st.dataframe(display_df, use_container_width=True, hide_index=True)
+            
+            # Summary statistics
+            st.markdown("### 📊 筛选条件说明")
+            st.info("""
+            **筛选逻辑:**
+            - PE1 > PE2 (远期PE低于当前PE) - 估值改善
+            - PE1 > 行业平均, PE2 > 行业平均 - 相对估值合理
+            - EG1 > 0 (预期增长为正)
+            - EG1 > 行业平均 - 增长高于同行
+            - 0 < PEG1 < 1 (估值合理且增长有吸引力)
+            """)
+        else:
+            st.warning("当前没有股票满足所有筛选条件，请尝试放宽条件")
+    else:
+        st.warning("EPS数据不足，无法进行PEG筛选")
+
+    # --- Sector Stock Selector (Original) ---
+    st.markdown('<div class="section-header">🔍 板块内选股 (动量+成交额)</div>', unsafe_allow_html=True)
+    selected_sector = st.selectbox("选择板块", ['全部'] + sorted(df['板块'].unique()), key='sector_selector')
+    if selected_sector != '全部':
+        sector_df = df[df['板块'] == selected_sector].copy()
+    else:
+        sector_df = df.copy()
+
+    # Avoid division by zero in scoring
+    if sector_df['涨跌幅_1d'].std() > 0:
+        sector_df['动量分'] = (sector_df['涨跌幅_1d'] - sector_df['涨跌幅_1d'].mean()) / sector_df['涨跌幅_1d'].std()
+    else:
+        sector_df['动量分'] = 0
+        
+    if sector_df['成交额(亿)'].std() > 0:
+        sector_df['成交额分'] = (sector_df['成交额(亿)'] - sector_df['成交额(亿)'].mean()) / sector_df['成交额(亿)'].std()
+    else:
+        sector_df['成交额分'] = 0
+        
+    sector_df['综合分'] = (sector_df['动量分']*0.6 + sector_df['成交额分']*0.4).round(2)
+
+    top_stocks = sector_df.nlargest(15, '综合分')[['代码','名称','板块','最新价','涨跌幅_1d','涨跌幅_1w','涨跌幅_1m','成交额(亿)','综合分']]
+    top_stocks['涨跌幅_1d'] = top_stocks['涨跌幅_1d'].apply(lambda x: f"{x:.2f}%")
+    top_stocks['涨跌幅_1w'] = top_stocks['涨跌幅_1w'].apply(lambda x: f"{x:.2f}%")
+    top_stocks['涨跌幅_1m'] = top_stocks['涨跌幅_1m'].apply(lambda x: f"{x:.2f}%")
+    st.dataframe(top_stocks, use_container_width=True, hide_index=True)
 
     # --- Top Movers ---
     st.markdown('<div class="section-header">📈 全市场龙虎榜</div>', unsafe_allow_html=True)
@@ -933,33 +1167,6 @@ def main():
         volume_top = df.nlargest(10, '成交额(亿)')[['代码','名称','板块','最新价','涨跌幅_1d','成交额(亿)']].copy()
         volume_top['涨跌幅_1d'] = volume_top['涨跌幅_1d'].apply(lambda x: f"{x:.2f}%")
         st.dataframe(volume_top, use_container_width=True, hide_index=True)
-
-    # --- Sector Stock Selector ---
-    st.markdown('<div class="section-header">🔍 板块内选股</div>', unsafe_allow_html=True)
-    selected_sector = st.selectbox("选择板块", ['全部'] + sorted(df['板块'].unique()), key='sector_selector')
-    if selected_sector != '全部':
-        sector_df = df[df['板块'] == selected_sector].copy()
-    else:
-        sector_df = df.copy()
-
-    # Avoid division by zero in scoring
-    if sector_df['涨跌幅_1d'].std() > 0:
-        sector_df['动量分'] = (sector_df['涨跌幅_1d'] - sector_df['涨跌幅_1d'].mean()) / sector_df['涨跌幅_1d'].std()
-    else:
-        sector_df['动量分'] = 0
-        
-    if sector_df['成交额(亿)'].std() > 0:
-        sector_df['成交额分'] = (sector_df['成交额(亿)'] - sector_df['成交额(亿)'].mean()) / sector_df['成交额(亿)'].std()
-    else:
-        sector_df['成交额分'] = 0
-        
-    sector_df['综合分'] = (sector_df['动量分']*0.6 + sector_df['成交额分']*0.4).round(2)
-
-    top_stocks = sector_df.nlargest(15, '综合分')[['代码','名称','板块','最新价','涨跌幅_1d','涨跌幅_1w','涨跌幅_1m','成交额(亿)','综合分']]
-    top_stocks['涨跌幅_1d'] = top_stocks['涨跌幅_1d'].apply(lambda x: f"{x:.2f}%")
-    top_stocks['涨跌幅_1w'] = top_stocks['涨跌幅_1w'].apply(lambda x: f"{x:.2f}%")
-    top_stocks['涨跌幅_1m'] = top_stocks['涨跌幅_1m'].apply(lambda x: f"{x:.2f}%")
-    st.dataframe(top_stocks, use_container_width=True, hide_index=True)
 
     # --- Strategy Recommendation ---
     st.markdown('<div class="section-header">📋 实时策略建议</div>', unsafe_allow_html=True)
@@ -1017,8 +1224,9 @@ def main():
     st.markdown("---")
     st.markdown(f"""
     <div style="text-align:center; color:#666; font-size:0.8rem;">
-        数据来源: Yahoo Finance | 成分股列表: universe.csv | 对冲基金级分析系统 v2.0<br>
+        数据来源: Yahoo Finance | 成分股列表: universe.csv | 对冲基金级分析系统 v3.0<br>
         技术指标: MACD(12,26,9) | KDJ(9,3,3) | RSI(14) | ATR(14) | Bollinger Bands(20,2)<br>
+        基本面: 当前EPS, 预期EPS, PEG, 增长加速筛选<br>
         更新: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
     </div>
     """, unsafe_allow_html=True)
