@@ -12,7 +12,7 @@ import random
 
 st.set_page_config(layout="wide", page_title="CSI 800 + CSI 1000 Dashboard", page_icon="📊")
 
-# Custom CSS
+# Custom CSS - UPDATED with better contrast
 st.markdown("""
 <style>
     .main-header { font-size: 2.5rem; color: #1E3A8A; font-weight: 800; text-align: center; }
@@ -25,7 +25,27 @@ st.markdown("""
     .signal-buy { background-color: #10B981; color: white; padding: 0.2rem 0.5rem; border-radius: 4px; font-weight: bold; }
     .signal-sell { background-color: #EF4444; color: white; padding: 0.2rem 0.5rem; border-radius: 4px; font-weight: bold; }
     .signal-neutral { background-color: #F59E0B; color: white; padding: 0.2rem 0.5rem; border-radius: 4px; font-weight: bold; }
-    .fundamental-card { background-color: #f8f9fa; padding: 1rem; border-radius: 8px; border: 1px solid #e5e7eb; margin: 0.5rem 0; }
+    /* FIXED: Fundamental card with better contrast */
+    .fundamental-card { 
+        background-color: #ffffff; 
+        padding: 1rem; 
+        border-radius: 8px; 
+        border: 1px solid #e5e7eb; 
+        margin: 0.5rem 0; 
+        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    }
+    .fundamental-card div { 
+        color: #000000 !important; 
+    }
+    .fundamental-card .metric-label { 
+        color: #4B5563 !important; 
+        font-size: 0.9rem; 
+    }
+    .fundamental-card .metric-value { 
+        color: #111827 !important; 
+        font-size: 1.5rem; 
+        font-weight: bold; 
+    }
     .price-up { color: #EF4444; font-weight: bold; }
     .price-down { color: #10B981; font-weight: bold; }
     .data-warning { background-color: #fff3cd; color: #856404; padding: 0.5rem; border-radius: 4px; margin: 0.5rem 0; }
@@ -51,7 +71,7 @@ def code_to_yf(code):
 # ------------------------------------------------------------
 # Fetch real-time stock data with rate limiting (cached 30 min)
 # ------------------------------------------------------------
-@st.cache_data(ttl=1800)  # Increased to 30 minutes
+@st.cache_data(ttl=1800)
 def fetch_realtime_stocks(ticker_list):
     stocks = []
     prog = st.progress(0)
@@ -109,7 +129,7 @@ def fetch_realtime_stocks(ticker_list):
     return pd.DataFrame(stocks)
 
 # ------------------------------------------------------------
-# Technical Analysis Functions (unchanged)
+# Technical Analysis Functions
 # ------------------------------------------------------------
 def calculate_macd(df, fast=12, slow=26, signal=9):
     """Calculate MACD indicator"""
@@ -269,7 +289,7 @@ def generate_trading_signals(latest):
 # ------------------------------------------------------------
 # Get fundamental data from Yahoo Finance with better rate limiting
 # ------------------------------------------------------------
-@st.cache_data(ttl=7200)  # Cache for 2 hours to reduce API calls
+@st.cache_data(ttl=7200)
 def get_fundamental_data(yf_ticker):
     """Get fundamental data for a stock with rate limiting"""
     try:
@@ -632,7 +652,7 @@ def main():
             fundamentals, info = get_fundamental_data(yf_ticker)
             
             if fundamentals and any(value != 0 for value in fundamentals.values()):
-                # Key Metrics in columns
+                # Key Metrics in columns - FIXED with proper styling
                 st.markdown("### 关键指标")
                 cols = st.columns(4)
                 metrics = [
@@ -646,8 +666,8 @@ def main():
                     with cols[idx]:
                         st.markdown(f"""
                         <div class="fundamental-card">
-                            <div style="color: #666; font-size: 0.9rem;">{label}</div>
-                            <div style="font-size: 1.5rem; font-weight: bold;">{value}</div>
+                            <div style="color: #4B5563; font-size: 0.9rem;">{label}</div>
+                            <div style="color: #111827; font-size: 1.5rem; font-weight: bold;">{value}</div>
                         </div>
                         """, unsafe_allow_html=True)
                 
@@ -681,7 +701,7 @@ def main():
                     })
                     st.dataframe(profitability_df, use_container_width=True, hide_index=True)
                 
-                # Price Levels
+                # Price Levels - FIXED with proper styling
                 st.markdown("### 📈 价格水平")
                 col1, col2, col3 = st.columns(3)
                 
@@ -696,9 +716,9 @@ def main():
                         
                         st.markdown(f"""
                         <div class="fundamental-card">
-                            <div>当前价格: <b>{current:.2f}</b></div>
-                            <div>52周高点: {high_52w:.2f} (距离 {from_high:.1f}%)</div>
-                            <div>52周低点: {low_52w:.2f} (距离 {from_low:.1f}%)</div>
+                            <div style="color: #4B5563;">当前价格: <span style="color: #111827; font-weight: bold;">{current:.2f}</span></div>
+                            <div style="color: #4B5563;">52周高点: <span style="color: #111827;">{high_52w:.2f}</span> <span style="color: #EF4444;">(距离 {from_high:.1f}%)</span></div>
+                            <div style="color: #4B5563;">52周低点: <span style="color: #111827;">{low_52w:.2f}</span> <span style="color: #10B981;">(距离 {from_low:.1f}%)</span></div>
                         </div>
                         """, unsafe_allow_html=True)
                 
