@@ -1000,14 +1000,30 @@ def main():
     # --- Advanced Stock Selection with PEG and Growth Criteria ---
     st.markdown('<div class="section-header">🎯 基本面精选股 (PEG & 增长筛选)</div>', unsafe_allow_html=True)
     
+    # Add market cap filter
+    market_cap_options = {
+        "全部": (0, float('inf')),
+        "中盘股(100-500亿)": (100, 500),
+        "中盘成长(500-1000亿)": (500, 1000), 
+        "小盘股(<100亿)": (0, 100),
+        "大盘股(>1000亿)": (1000, float('inf'))
+    }
+    
+    col1, col2 = st.columns([1, 1])
+    with col1:
+        selected_mcap_range = st.selectbox("选择市值范围", list(market_cap_options.keys()), index=1)  # Default to mid-cap
+    
     # Calculate forward metrics (simplified - only use EG1)
     def calculate_forward_metrics_simple(df):
         """Calculate EG1 and PEG1 based on earnings estimates"""
         df = df.copy()
         
+        # Estimate market cap (in billions)
+        df['市值(亿)'] = df['最新价'] * df['成交量'] * 2 / 1e8  # Rough estimate using average of 2 days volume
+        
         # Calculate PE ratios
-        df['PE1'] = df['最新价'] / df['trailing_eps'].replace(0, np.nan)
-        df['PE2'] = df['最新价'] / df['forward_eps'].replace(0, np.nan)
+        df['PE0'] = df['最新价'] / df['trailing_eps'].replace(0, np.nan)  # Current P/E (was PE1)
+        df['PE1'] = df['最新价'] / df['forward_eps'].replace(0, np.nan)   # Forward P/E (was PE2)
         
         # Calculate EG1 (growth from trailing to forward EPS)
         def calc_eg1(row):
@@ -1026,7 +1042,7 @@ def main():
         
         df['EG1'] = df.apply(calc_eg1, axis=1)
         
-        # Calculate PEG ratio
+        # Calculate PEG ratio (using forward P/E)
         df['PEG1'] = df['PE1'] / df['EG1'].abs().replace(0, np.nan)
         
         return df
@@ -1034,10 +1050,23 @@ def main():
     # Apply calculations
     df_with_metrics = calculate_forward_metrics_simple(df)
     
+    # Apply market cap filter
+    min_mcap, max_mcap = market_cap_options[selected_mcap_range]
+    if max_mcap != float('inf'):
+        df_filtered = df_with_metrics[(df_with_metrics['市值(亿)'] >= min_mcap) & (df_with_metrics['市值(亿)'] <= max_mcap)]
+    else:
+        df_filtered = df_with_metrics[df_with_metrics['市值(亿)'] >= min_mcap]
+    
     # Drop rows with missing data
-    df_clean = df_with_metrics.dropna(subset=['最新价', 'trailing_eps', 'forward_eps', 'PE1', 'PE2', 'EG1', 'PEG1'])
+    df_clean = df_filtered.dropna(subset=['最新价', 'trailing_eps', 'forward_eps', 'PE0', 'PE1', 'EG1', 'PEG1'])
     
     if not df_clean.empty:
+        # Display market cap range info
+        mcap_info = f"当前筛选: {selected_mcap_range}"
+        if min_mcap > 0:
+            mcap_info += f" ({min_mcap}-{max_mcap if max_mcap != float('inf') else '∞'}亿)"
+        st.caption(mcap_info)
+        
         selected_universe = pd.DataFrame()
         sectors = df_clean['板块'].unique()
         
@@ -1049,14 +1078,14 @@ def main():
                 continue
                 
             # Calculate sector medians
+            sector_pe0 = curr_universe['PE0'].median()
             sector_pe1 = curr_universe['PE1'].median()
-            sector_pe2 = curr_universe['PE2'].median()
             sector_eg1 = curr_universe['EG1'].median()
             
             # PE conditions
-            pe_condition = curr_universe['PE1'] > curr_universe['PE2']  # Forward P/E lower than current P/E
-            pe_condition &= curr_universe['PE1'] > sector_pe1  # Current P/E above sector median
-            pe_condition &= curr_universe['PE2'] > sector_pe2  # Forward P/E above sector median
+            pe_condition = curr_universe['PE0'] > curr_universe['PE1']  # Forward P/E lower than current P/E
+            pe_condition &= curr_universe['PE0'] > sector_pe0  # Current P/E above sector median
+            pe_condition &= curr_universe['PE1'] > sector_pe1  # Forward P/E above sector median
             
             # Growth condition - positive growth and above sector median
             eg_condition = curr_universe['EG1'] > 0  # Positive expected growth
@@ -1074,33 +1103,44 @@ def main():
         
         if not selected_universe.empty:
             # Display results
-            display_cols = ['代码', '名称', '板块', '最新价', '涨跌幅_1d', 'PE1', 'PE2', 'EG1', 'PEG1']
+            display_cols = ['代码', '名称', '板块', '最新价', '市值(亿)', '涨跌幅_1d', 'PE0', 'PE1', 'EG1', 'PEG1']
             display_df = selected_universe[display_cols].copy()
             
             # Format columns
             display_df['涨跌幅_1d'] = display_df['涨跌幅_1d'].apply(lambda x: f"{x:.2f}%")
+            display_df['市值(亿)'] = display_df['市值(亿)'].apply(lambda x: f"{x:.0f}")
+            display_df['PE0'] = display_df['PE0'].apply(lambda x: f"{x:.2f}")
             display_df['PE1'] = display_df['PE1'].apply(lambda x: f"{x:.2f}")
-            display_df['PE2'] = display_df['PE2'].apply(lambda x: f"{x:.2f}")
             display_df['EG1'] = display_df['EG1'].apply(lambda x: f"{x:.1f}%")
             display_df['PEG1'] = display_df['PEG1'].apply(lambda x: f"{x:.2f}")
             
-            st.success(f"找到 {len(selected_universe)} 只符合PEG<1且增长为正的股票")
+            st.success(f"找到 {len(selected_universe)} 只符合PEG<1且增长为正的股票 (市值范围: {selected_mcap_range})")
             st.dataframe(display_df, use_container_width=True, hide_index=True)
             
             # Summary statistics
             st.markdown("### 📊 筛选条件说明")
             st.info("""
             **筛选逻辑:**
-            - PE1 > PE2 (远期PE低于当前PE) - 估值改善
-            - PE1 > 行业平均, PE2 > 行业平均 - 相对估值合理
-            - EG1 > 0 (预期增长为正)
-            - EG1 > 行业平均 - 增长高于同行
-            - 0 < PEG1 < 1 (估值合理且增长有吸引力)
+            - **PE0 > PE1** (远期PE低于当前PE) - 估值改善
+            - **PE0 > 行业平均, PE1 > 行业平均** - 相对估值合理
+            - **EG1 > 0** (预期增长为正)
+            - **EG1 > 行业平均** - 增长高于同行
+            - **0 < PEG1 < 1** (估值合理且增长有吸引力)
+            
+            **PE0**: 当前市盈率 (基于过去12个月盈利)  
+            **PE1**: 远期市盈率 (基于未来12个月预期盈利)  
+            **EG1**: 预期盈利增长率  
+            **PEG1**: 市盈率相对盈利增长比率
             """)
         else:
-            st.warning("当前没有股票满足所有筛选条件，请尝试放宽条件")
+            st.warning(f"在{selected_mcap_range}范围内，没有股票满足所有筛选条件，请尝试放宽条件或选择其他市值范围")
     else:
-        st.warning("EPS数据不足，无法进行PEG筛选")
+        st.warning(f"在{selected_mcap_range}范围内，EPS数据不足，无法进行PEG筛选")
+    
+    # Add a note about market cap distribution
+    if not df_with_metrics.empty:
+        mcap_stats = df_with_metrics['市值(亿)'].describe()
+        st.caption(f"📊 全市场市值分布: 平均 {mcap_stats['mean']:.0f}亿 | 中位数 {mcap_stats['50%']:.0f}亿 | 最小 {mcap_stats['min']:.0f}亿 | 最大 {mcap_stats['max']:.0f}亿")
 
     # --- Sector Stock Selector (Original) ---
     st.markdown('<div class="section-header">🔍 板块内选股 (动量+成交额)</div>', unsafe_allow_html=True)
