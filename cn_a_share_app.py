@@ -997,21 +997,21 @@ def main():
     )
     st.plotly_chart(fig, use_container_width=True)
 
-    # --- Advanced Stock Selection with PEG and Growth Criteria ---
-    st.markdown('<div class="section-header">🎯 基本面精选股 (PEG & 增长筛选)</div>', unsafe_allow_html=True)
-    
-    # Add market cap filter
+# --- Advanced Stock Selection with PEG and Growth Criteria ---
+st.markdown('<div class="section-header">🎯 基本面精选股 (PEG & 增长筛选)</div>', unsafe_allow_html=True)
+
+    # Adjusted market cap options based on actual data distribution
     market_cap_options = {
         "全部": (0, float('inf')),
-        "中盘股(100-500亿)": (100, 500),
-        "中盘成长(500-1000亿)": (500, 1000), 
-        "小盘股(<100亿)": (0, 100),
-        "大盘股(>1000亿)": (1000, float('inf'))
+        "微盘股(<10亿)": (0, 10),        # Below median
+        "小盘股(10-50亿)": (10, 50),      # Median to 2x median
+        "中盘股(50-150亿)": (50, 150),    # Upper quartile range
+        "大盘股(>150亿)": (150, float('inf'))  # Top end
     }
     
     col1, col2 = st.columns([1, 1])
     with col1:
-        selected_mcap_range = st.selectbox("选择市值范围", list(market_cap_options.keys()), index=1)  # Default to mid-cap
+        selected_mcap_range = st.selectbox("选择市值范围", list(market_cap_options.keys()), index=2)  # Default to 10-50亿
     
     # Calculate forward metrics (simplified - only use EG1)
     def calculate_forward_metrics_simple(df):
