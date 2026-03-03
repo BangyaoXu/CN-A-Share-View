@@ -997,8 +997,8 @@ def main():
     )
     st.plotly_chart(fig, use_container_width=True)
 
-# --- Advanced Stock Selection with PEG and Growth Criteria ---
-st.markdown('<div class="section-header">🎯 基本面精选股 (PEG & 增长筛选)</div>', unsafe_allow_html=True)
+    # --- Advanced Stock Selection with PEG and Growth Criteria ---
+    st.markdown('<div class="section-header">🎯 基本面精选股 (PEG & 增长筛选)</div>', unsafe_allow_html=True)
 
     # Adjusted market cap options based on actual data distribution
     market_cap_options = {
