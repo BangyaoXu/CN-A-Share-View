@@ -8,8 +8,9 @@ from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 import yfinance as yf
 import time
+import random
 
-st.set_page_config(layout="wide", page_title="CSI 800 + CSI 1000 Hedge Fund Dashboard", page_icon="📊")
+st.set_page_config(layout="wide", page_title="CSI 800 + CSI 1000 Dashboard", page_icon="📊")
 
 # Custom CSS
 st.markdown("""
@@ -25,6 +26,9 @@ st.markdown("""
     .signal-sell { background-color: #EF4444; color: white; padding: 0.2rem 0.5rem; border-radius: 4px; font-weight: bold; }
     .signal-neutral { background-color: #F59E0B; color: white; padding: 0.2rem 0.5rem; border-radius: 4px; font-weight: bold; }
     .fundamental-card { background-color: #f8f9fa; padding: 1rem; border-radius: 8px; border: 1px solid #e5e7eb; margin: 0.5rem 0; }
+    .price-up { color: #EF4444; font-weight: bold; }
+    .price-down { color: #10B981; font-weight: bold; }
+    .data-warning { background-color: #fff3cd; color: #856404; padding: 0.5rem; border-radius: 4px; margin: 0.5rem 0; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -38,16 +42,16 @@ def load_constituents():
     return df
 
 # ------------------------------------------------------------
-# Yahoo Finance helper
+# Yahoo Finance helper with retry logic
 # ------------------------------------------------------------
 def code_to_yf(code):
     code = str(code).zfill(6)
     return f"{code}.SS" if code.startswith(('5','6')) else f"{code}.SZ"
 
 # ------------------------------------------------------------
-# Fetch real-time stock data (cached 15 min)
+# Fetch real-time stock data with rate limiting (cached 30 min)
 # ------------------------------------------------------------
-@st.cache_data(ttl=900)
+@st.cache_data(ttl=1800)  # Increased to 30 minutes
 def fetch_realtime_stocks(ticker_list):
     stocks = []
     prog = st.progress(0)
@@ -61,6 +65,9 @@ def fetch_realtime_stocks(ticker_list):
         status.text(f"获取 {i+1}/{total}: {name}")
         yf_ticker = code_to_yf(code)
         try:
+            # Add jitter to avoid rate limiting
+            time.sleep(random.uniform(0.1, 0.3))
+            
             stock = yf.Ticker(yf_ticker)
             hist = stock.history(start=start_date_1m, end=end_date.strftime('%Y-%m-%d'))
             
@@ -91,15 +98,18 @@ def fetch_realtime_stocks(ticker_list):
                     '成交额(亿)': round(last['Volume'] * last['Close'] / 1e8, 2),
                 })
         except Exception as e:
+            # If rate limited, skip and continue
+            if "Too Many Requests" in str(e):
+                st.warning(f"API限流，跳过 {name}")
             pass
         prog.progress((i+1)/total)
-        time.sleep(0.1)
+    
     status.empty()
     prog.empty()
     return pd.DataFrame(stocks)
 
 # ------------------------------------------------------------
-# Technical Analysis Functions
+# Technical Analysis Functions (unchanged)
 # ------------------------------------------------------------
 def calculate_macd(df, fast=12, slow=26, signal=9):
     """Calculate MACD indicator"""
@@ -257,14 +267,21 @@ def generate_trading_signals(latest):
     return signals, overall
 
 # ------------------------------------------------------------
-# Get fundamental data from Yahoo Finance
+# Get fundamental data from Yahoo Finance with better rate limiting
 # ------------------------------------------------------------
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=7200)  # Cache for 2 hours to reduce API calls
 def get_fundamental_data(yf_ticker):
-    """Get fundamental data for a stock"""
+    """Get fundamental data for a stock with rate limiting"""
     try:
+        # Add delay to avoid rate limiting
+        time.sleep(random.uniform(0.5, 1.0))
+        
         stock = yf.Ticker(yf_ticker)
         info = stock.info
+        
+        # If we get rate limited, info might be empty
+        if not info or len(info) < 10:
+            return None, None
         
         # Key statistics with safe defaults
         fundamentals = {
@@ -291,7 +308,8 @@ def get_fundamental_data(yf_ticker):
         
         return fundamentals, info
     except Exception as e:
-        st.warning(f"基本面数据获取失败: {e}")
+        if "Too Many Requests" in str(e):
+            st.warning("API限流，请稍后再试")
         return None, None
 
 # ------------------------------------------------------------
@@ -315,12 +333,16 @@ def get_index_hist(ticker, period="6mo"):
 # Main
 # ------------------------------------------------------------
 def main():
-    st.markdown('<p class="main-header">📊 CSI 800 + CSI 1000 对冲基金仪表盘</p>', unsafe_allow_html=True)
+    st.markdown('<p class="main-header">📊 CSI 800 + CSI 1000 仪表盘</p>', unsafe_allow_html=True)
     st.markdown('<p class="sub-header">实时行情 + 技术分析 + 基本面深度挖掘 + 多周期板块轮动</p>', unsafe_allow_html=True)
 
     with st.sidebar:
         st.image("https://img.icons8.com/color/96/000000/investment-portfolio.png", width=100)
         st.title("控制面板")
+        
+        # Add a note about rate limiting
+        st.info("⚠️ Yahoo Finance API 有访问限制，基本面数据可能需要较长时间加载")
+        
         if st.button("🔄 刷新所有数据", type="primary"):
             st.cache_data.clear()
             st.rerun()
@@ -346,27 +368,35 @@ def main():
     st.markdown("---")
     st.markdown('<div class="section-header">🔍 个股深度研究</div>', unsafe_allow_html=True)
     
-    col1, col2, col3 = st.columns([2, 2, 1])
+    # Create a list of display options
+    stock_options = df.apply(lambda x: f"{x['代码']} - {x['名称']}", axis=1).tolist()
+    
+    # Use columns for better layout
+    col1, col2, col3, col4 = st.columns([2, 1.5, 1, 1])
+    
     with col1:
-        # Create a list of display options
-        stock_options = df.apply(lambda x: f"{x['代码']} - {x['名称']}", axis=1).tolist()
-        selected_option = st.selectbox("选择股票", options=stock_options)
+        selected_option = st.selectbox("选择股票", options=stock_options, key="stock_selector")
         selected_code = selected_option.split(' - ')[0]
         stock_info = df[df['代码'] == selected_code].iloc[0]
     
     with col2:
         period = st.selectbox(
             "分析周期",
-            options=["1mo", "3mo", "6mo", "1y", "2y"],
-            index=2
+            options=["3mo", "6mo", "1y", "2y"],
+            index=1,
+            key="period_selector"
         )
     
     with col3:
-        st.metric(
-            stock_info['名称'],
-            f"{stock_info['最新价']:.2f}",
-            delta=f"{stock_info['涨跌幅_1d']:.2f}%"
-        )
+        # Display current price
+        price = stock_info['最新价']
+        st.metric("当前价格", f"{price:.2f}")
+    
+    with col4:
+        # Display daily movement
+        change = stock_info['涨跌幅_1d']
+        delta_color = "normal" if change > 0 else "inverse"
+        st.metric("日涨跌幅", f"{change:+.2f}%", delta=f"{change:.2f}%", delta_color=delta_color)
 
     # --- Technical Analysis Section ---
     if selected_code:
@@ -393,151 +423,176 @@ def main():
                 </div>
                 """, unsafe_allow_html=True)
                 
-                # Create price chart with indicators
-                fig = make_subplots(
-                    rows=5, cols=1,
-                    shared_xaxes=True,
-                    vertical_spacing=0.03,
-                    row_heights=[0.4, 0.15, 0.15, 0.15, 0.15],
-                    subplot_titles=('价格 & 技术指标', 'MACD', 'KDJ', 'RSI', 'ATR & Bollinger Width')
-                )
+                # Create K线图 (Candlestick chart) - Separate chart
+                st.markdown("### 📊 K线图")
+                fig_k = go.Figure()
                 
-                # Price and Bollinger Bands
-                fig.add_trace(go.Candlestick(
+                # Candlestick
+                fig_k.add_trace(go.Candlestick(
                     x=hist_with_indicators.index,
                     open=hist_with_indicators['Open'],
                     high=hist_with_indicators['High'],
                     low=hist_with_indicators['Low'],
                     close=hist_with_indicators['Close'],
-                    name='K线'
-                ), row=1, col=1)
+                    name='K线',
+                    showlegend=False
+                ))
                 
                 # Bollinger Bands
-                fig.add_trace(go.Scatter(
+                fig_k.add_trace(go.Scatter(
                     x=hist_with_indicators.index,
                     y=hist_with_indicators['BB_Upper'],
                     line=dict(color='rgba(250, 128, 114, 0.5)', width=1),
                     name='上轨'
-                ), row=1, col=1)
+                ))
                 
-                fig.add_trace(go.Scatter(
+                fig_k.add_trace(go.Scatter(
                     x=hist_with_indicators.index,
                     y=hist_with_indicators['BB_Lower'],
                     line=dict(color='rgba(250, 128, 114, 0.5)', width=1),
                     name='下轨',
                     fill='tonexty',
                     fillcolor='rgba(250, 128, 114, 0.1)'
-                ), row=1, col=1)
+                ))
                 
-                fig.add_trace(go.Scatter(
+                fig_k.add_trace(go.Scatter(
                     x=hist_with_indicators.index,
                     y=hist_with_indicators['BB_Middle'],
                     line=dict(color='orange', width=1, dash='dash'),
                     name='中轨'
-                ), row=1, col=1)
+                ))
                 
-                # Volume
+                fig_k.update_layout(
+                    height=500,
+                    title=f"{stock_info['名称']} ({selected_code}) - K线图",
+                    hovermode='x unified',
+                    xaxis_rangeslider_visible=False
+                )
+                
+                st.plotly_chart(fig_k, use_container_width=True)
+                
+                # Create成交量图 (Volume chart) - Separate chart
+                st.markdown("### 📊 成交量图")
+                fig_v = go.Figure()
+                
                 colors = ['red' if hist_with_indicators['Close'].iloc[i] >= hist_with_indicators['Open'].iloc[i] 
                          else 'green' for i in range(len(hist_with_indicators))]
                 
-                fig.add_trace(go.Bar(
+                fig_v.add_trace(go.Bar(
                     x=hist_with_indicators.index,
                     y=hist_with_indicators['Volume'],
                     name='成交量',
                     marker_color=colors,
-                    opacity=0.5,
-                    showlegend=False
-                ), row=1, col=1)
+                    opacity=0.7
+                ))
+                
+                fig_v.update_layout(
+                    height=300,
+                    title=f"{stock_info['名称']} ({selected_code}) - 成交量",
+                    hovermode='x unified',
+                    xaxis_rangeslider_visible=False,
+                    yaxis_title="成交量"
+                )
+                
+                st.plotly_chart(fig_v, use_container_width=True)
+                
+                # Create technical indicators chart (MACD, KDJ, RSI, ATR)
+                st.markdown("### 📊 技术指标")
+                fig_tech = make_subplots(
+                    rows=4, cols=1,
+                    shared_xaxes=True,
+                    vertical_spacing=0.05,
+                    row_heights=[0.25, 0.25, 0.25, 0.25],
+                    subplot_titles=('MACD', 'KDJ', 'RSI', 'ATR & Bollinger Width')
+                )
                 
                 # MACD
-                fig.add_trace(go.Scatter(
+                fig_tech.add_trace(go.Scatter(
                     x=hist_with_indicators.index,
                     y=hist_with_indicators['MACD'],
                     line=dict(color='blue', width=2),
                     name='MACD'
-                ), row=2, col=1)
+                ), row=1, col=1)
                 
-                fig.add_trace(go.Scatter(
+                fig_tech.add_trace(go.Scatter(
                     x=hist_with_indicators.index,
                     y=hist_with_indicators['Signal'],
                     line=dict(color='red', width=2),
                     name='Signal'
-                ), row=2, col=1)
+                ), row=1, col=1)
                 
                 # MACD Histogram
                 colors_macd = ['red' if x < 0 else 'green' for x in hist_with_indicators['MACD_Hist']]
-                fig.add_trace(go.Bar(
+                fig_tech.add_trace(go.Bar(
                     x=hist_with_indicators.index,
                     y=hist_with_indicators['MACD_Hist'],
                     name='MACD Hist',
                     marker_color=colors_macd,
                     opacity=0.5,
                     showlegend=False
-                ), row=2, col=1)
+                ), row=1, col=1)
                 
                 # KDJ
-                fig.add_trace(go.Scatter(
+                fig_tech.add_trace(go.Scatter(
                     x=hist_with_indicators.index,
                     y=hist_with_indicators['K'],
                     line=dict(color='blue', width=2),
                     name='K'
-                ), row=3, col=1)
+                ), row=2, col=1)
                 
-                fig.add_trace(go.Scatter(
+                fig_tech.add_trace(go.Scatter(
                     x=hist_with_indicators.index,
                     y=hist_with_indicators['D'],
                     line=dict(color='red', width=2),
                     name='D'
-                ), row=3, col=1)
+                ), row=2, col=1)
                 
-                fig.add_trace(go.Scatter(
+                fig_tech.add_trace(go.Scatter(
                     x=hist_with_indicators.index,
                     y=hist_with_indicators['J'],
                     line=dict(color='green', width=2),
                     name='J'
-                ), row=3, col=1)
+                ), row=2, col=1)
                 
                 # RSI with levels
-                fig.add_trace(go.Scatter(
+                fig_tech.add_trace(go.Scatter(
                     x=hist_with_indicators.index,
                     y=hist_with_indicators['RSI'],
                     line=dict(color='purple', width=2),
                     name='RSI'
-                ), row=4, col=1)
+                ), row=3, col=1)
                 
                 # RSI levels
-                fig.add_hline(y=70, line_dash="dash", line_color="red", opacity=0.5, row=4, col=1)
-                fig.add_hline(y=30, line_dash="dash", line_color="green", opacity=0.5, row=4, col=1)
-                fig.add_hline(y=50, line_dash="dot", line_color="gray", opacity=0.3, row=4, col=1)
+                fig_tech.add_hline(y=70, line_dash="dash", line_color="red", opacity=0.5, row=3, col=1)
+                fig_tech.add_hline(y=30, line_dash="dash", line_color="green", opacity=0.5, row=3, col=1)
+                fig_tech.add_hline(y=50, line_dash="dot", line_color="gray", opacity=0.3, row=3, col=1)
                 
                 # ATR and Bollinger Width
-                fig.add_trace(go.Scatter(
+                fig_tech.add_trace(go.Scatter(
                     x=hist_with_indicators.index,
                     y=hist_with_indicators['ATR_pct'],
                     line=dict(color='brown', width=2),
                     name='ATR%'
-                ), row=5, col=1)
+                ), row=4, col=1)
                 
-                fig.add_trace(go.Scatter(
+                fig_tech.add_trace(go.Scatter(
                     x=hist_with_indicators.index,
                     y=hist_with_indicators['BB_Width'],
                     line=dict(color='orange', width=2, dash='dash'),
                     name='BB宽度%'
-                ), row=5, col=1)
+                ), row=4, col=1)
                 
-                # Update layout
-                fig.update_layout(
-                    height=1200,
+                fig_tech.update_layout(
+                    height=800,
                     showlegend=True,
                     hovermode='x unified',
-                    title=f"{stock_info['名称']} ({selected_code}) - 技术分析"
+                    title=f"{stock_info['名称']} ({selected_code}) - 技术指标"
                 )
                 
-                # FIXED: Changed from update_xatches to update_xaxes
-                fig.update_xaxes(rangeslider_visible=False)
-                fig.update_layout(legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1))
+                fig_tech.update_xaxes(rangeslider_visible=False)
+                fig_tech.update_layout(legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1))
                 
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig_tech, use_container_width=True)
                 
                 # Signal Table
                 st.markdown("### 📊 技术信号汇总")
@@ -572,16 +627,16 @@ def main():
     st.markdown('<div class="section-header">📚 基本面深度分析</div>', unsafe_allow_html=True)
     
     if selected_code:
-        with st.spinner("加载基本面数据..."):
+        with st.spinner("加载基本面数据 (可能需要10-20秒)..."):
             yf_ticker = code_to_yf(selected_code)
             fundamentals, info = get_fundamental_data(yf_ticker)
             
-            if fundamentals:
+            if fundamentals and any(value != 0 for value in fundamentals.values()):
                 # Key Metrics in columns
                 st.markdown("### 关键指标")
                 cols = st.columns(4)
                 metrics = [
-                    ('市值(亿)', f"{fundamentals['市值(亿)']:.0f}"),
+                    ('市值(亿)', f"{fundamentals['市值(亿)']:.0f}" if fundamentals['市值(亿)'] > 0 else 'N/A'),
                     ('PE(TTM)', f"{fundamentals['PE(TTM)']:.2f}" if fundamentals['PE(TTM)'] > 0 else 'N/A'),
                     ('PB', f"{fundamentals['PB']:.2f}" if fundamentals['PB'] > 0 else 'N/A'),
                     ('ROE(%)', f"{fundamentals['ROE(%)']:.1f}%" if fundamentals['ROE(%)'] > 0 else 'N/A'),
@@ -652,7 +707,18 @@ def main():
                     with st.expander("公司业务概览"):
                         st.write(info['longBusinessSummary'])
             else:
-                st.warning("无法获取基本面数据")
+                st.warning("""
+                ⚠️ 无法获取基本面数据 - Yahoo Finance API 访问限制
+                
+                可能的原因:
+                - API 请求次数过多，请稍后再试
+                - 该股票可能没有完整的基本面数据
+                - 网络连接问题
+                
+                技术指标分析仍然可用，请继续使用上方的技术分析功能。
+                """)
+    else:
+        st.info("请先选择一只股票进行基本面分析")
 
     # --- Index charts with EMAs ---
     st.markdown("### 📈 主要指数技术分析")
@@ -668,7 +734,7 @@ def main():
             if hist_df is not None:
                 fig = go.Figure()
                 fig.add_trace(go.Scatter(x=hist_df.index, y=hist_df['close'], mode='lines', name='收盘价'))
-                for span in [20,60,120,250]:
+                for span in [20, 60, 120, 250]:
                     fig.add_trace(go.Scatter(x=hist_df.index, y=hist_df[f'EMA{span}'], mode='lines', name=f'EMA{span}'))
                 fig.update_layout(height=500, title=f"{name} 日线图 (EMA 20/60/120/250)")
                 st.plotly_chart(fig, use_container_width=True)
