@@ -58,6 +58,10 @@ if 'fundamentals_cache' not in st.session_state:
     st.session_state.fundamentals_cache = None
 if 'fundamentals_loading' not in st.session_state:
     st.session_state.fundamentals_loading = False
+if 'fundamentals_loaded' not in st.session_state:
+    st.session_state.fundamentals_loaded = False
+if 'last_fundamental_update' not in st.session_state:
+    st.session_state.last_fundamental_update = None
 
 # ------------------------------------------------------------
 # Load constituent list from CSV
@@ -76,7 +80,7 @@ def code_to_yf(code):
     return f"{code}.SS" if code.startswith(('5','6')) else f"{code}.SZ"
 
 # ------------------------------------------------------------
-# Fetch real-time stock data with rate limiting (cached 30 min)
+# Fetch real-time stock data with rate limiting
 # ------------------------------------------------------------
 @st.cache_data(ttl=1800)
 def fetch_realtime_stocks(ticker_list):
@@ -138,9 +142,8 @@ def fetch_realtime_stocks(ticker_list):
     return pd.DataFrame(stocks)
 
 # ------------------------------------------------------------
-# Batch fetch fundamental data for all stocks (cached 2 hours)
+# Batch fetch fundamental data for all stocks (no auto-expiry)
 # ------------------------------------------------------------
-@st.cache_data(ttl=7200)
 def fetch_all_fundamentals(ticker_list):
     """Fetch fundamental data for all stocks in batch"""
     all_fundamentals = {}
@@ -400,14 +403,19 @@ def main():
         # Cache management
         if st.button("🗑️ 清除基本面缓存", type="secondary"):
             st.session_state.fundamentals_cache = None
+            st.session_state.fundamentals_loaded = False
+            st.session_state.last_fundamental_update = None
             st.cache_data.clear()
             st.success("缓存已清除")
             st.rerun()
         
-        st.info("⚠️ 基本面数据首次加载需要30-60秒，之后缓存2小时")
+        # Show cache status
+        if st.session_state.fundamentals_loaded and st.session_state.last_fundamental_update:
+            st.info(f"✅ 基本面数据已缓存\n更新时间: {st.session_state.last_fundamental_update.strftime('%Y-%m-%d %H:%M')}")
+        else:
+            st.info("⚠️ 基本面数据未加载，点击下方按钮加载")
         
-        if st.button("🔄 刷新所有数据", type="primary"):
-            st.session_state.fundamentals_cache = None
+        if st.button("🔄 刷新实时数据", type="primary"):
             st.cache_data.clear()
             st.rerun()
         
@@ -416,7 +424,7 @@ def main():
         st.info("📈 股价: Yahoo Finance")
         st.info("📊 成分股: universe.csv")
         st.info("📉 技术指标: MACD, KDJ, RSI, ATR, Bollinger")
-        st.info("📚 基本面: 批量缓存 (2小时)")
+        st.info("📚 基本面: 手动刷新缓存")
         st.caption(f"最后更新: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
     constituents = load_constituents()
@@ -428,6 +436,27 @@ def main():
     if df.empty:
         st.error("未能获取任何股票数据，请检查网络")
         st.stop()
+
+    # --- Load fundamentals if not cached and user wants to load ---
+    if not st.session_state.fundamentals_loaded and not st.session_state.fundamentals_loading:
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            st.info("点击右侧按钮加载基本面数据（首次加载需要30-60秒）")
+        with col2:
+            if st.button("📥 加载基本面数据", type="primary"):
+                st.session_state.fundamentals_loading = True
+                st.rerun()
+    
+    # Load fundamentals in background if triggered
+    if st.session_state.fundamentals_loading and st.session_state.fundamentals_cache is None:
+        with st.spinner("正在加载基本面数据 (需要30-60秒)..."):
+            unique_tickers = df['yf_ticker'].unique().tolist()
+            st.session_state.fundamentals_cache = fetch_all_fundamentals(unique_tickers)
+            st.session_state.fundamentals_loaded = True
+            st.session_state.fundamentals_loading = False
+            st.session_state.last_fundamental_update = datetime.now()
+            st.success(f"✅ 已缓存 {len(st.session_state.fundamentals_cache)} 只股票的基本面数据")
+            st.rerun()
 
     # --- Stock Selection for Deep Dive ---
     st.markdown("---")
@@ -667,21 +696,11 @@ def main():
             else:
                 st.warning(f"股票 {stock_info['名称']} 历史数据不足，无法计算技术指标")
 
-    # --- Fundamental Analysis Section (Now using cached batch data) ---
+    # --- Fundamental Analysis Section (Using cached data) ---
     st.markdown('<div class="section-header">📚 基本面深度分析</div>', unsafe_allow_html=True)
     
-    # Load fundamentals in background if not cached
-    if st.session_state.fundamentals_cache is None and not st.session_state.fundamentals_loading:
-        st.session_state.fundamentals_loading = True
-        with st.spinner("首次加载基本面数据 (可能需要30-60秒，之后将缓存2小时)..."):
-            unique_tickers = df['yf_ticker'].unique().tolist()
-            st.session_state.fundamentals_cache = fetch_all_fundamentals(unique_tickers)
-            st.session_state.fundamentals_loading = False
-            st.success(f"✅ 已缓存 {len(st.session_state.fundamentals_cache)} 只股票的基本面数据")
-            st.rerun()
-    
-    # Display fundamental data for selected stock
-    if selected_code and st.session_state.fundamentals_cache is not None:
+    # Display fundamental data for selected stock if cache exists
+    if selected_code and st.session_state.fundamentals_loaded and st.session_state.fundamentals_cache is not None:
         yf_ticker = code_to_yf(selected_code)
         fundamentals = st.session_state.fundamentals_cache.get(yf_ticker)
         
@@ -788,14 +807,12 @@ def main():
                     st.write(fundamentals['longBusinessSummary'])
         else:
             st.warning("""
-            ⚠️ 无法获取基本面数据 - 可能原因:
+            ⚠️ 无法获取该股票的基本面数据 - 可能原因:
             - 该股票没有完整的基本面数据
-            - 缓存仍在加载中
-            
-            请稍等片刻或选择其他股票。技术指标分析仍然可用。
+            - API 返回数据不完整
             """)
-    elif selected_code:
-        st.info("⏳ 正在加载基本面数据缓存，请稍候...")
+    elif selected_code and not st.session_state.fundamentals_loaded:
+        st.info("💡 点击上方'加载基本面数据'按钮获取完整基本面分析")
 
     # --- Index charts with EMAs ---
     st.markdown("### 📈 主要指数技术分析")
@@ -1180,7 +1197,7 @@ def main():
     <div style="text-align:center; color:#666; font-size:0.8rem;">
         数据来源: Yahoo Finance | 成分股列表: universe.csv | 对冲基金级分析系统 v3.0<br>
         技术指标: MACD(12,26,9) | KDJ(9,3,3) | RSI(14) | ATR(14) | Bollinger Bands(20,2)<br>
-        基本面: 批量缓存 (2小时), 当前EPS, 预期EPS, PEG, 增长筛选<br>
+        基本面: 手动刷新缓存, 当前EPS, 预期EPS, PEG, 增长筛选<br>
         更新: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
     </div>
     """, unsafe_allow_html=True)
