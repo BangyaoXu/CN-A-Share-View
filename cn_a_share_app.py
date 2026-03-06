@@ -12,7 +12,7 @@ import random
 
 st.set_page_config(layout="wide", page_title="CSI 800 + CSI 1000 Dashboard", page_icon="📊")
 
-# Custom CSS
+# Custom CSS (unchanged)
 st.markdown("""
 <style>
     .main-header { font-size: 2.5rem; color: #1E3A8A; font-weight: 800; text-align: center; }
@@ -237,7 +237,7 @@ def fetch_all_fundamentals(ticker_list):
     return all_fundamentals
 
 # ------------------------------------------------------------
-# Technical Analysis Functions (unchanged)
+# Technical Analysis Functions
 # ------------------------------------------------------------
 def calculate_macd(df, fast=12, slow=26, signal=9):
     df = df.copy()
@@ -534,9 +534,332 @@ def main():
         delta_color = "normal" if change > 0 else "inverse"
         st.metric("日涨跌幅", f"{change:+.2f}%", delta=f"{change:.2f}%", delta_color=delta_color)
 
-    # Rest of the code continues exactly as before...
-    # (All the technical analysis, fundamental analysis, sector rotation, etc. sections remain unchanged)
+    # --- Technical Analysis Section (FULLY INTACT) ---
+    if selected_code:
+        yf_ticker = code_to_yf(selected_code)
+        
+        with st.spinner("加载技术指标..."):
+            stock = yf.Ticker(yf_ticker)
+            hist = stock.history(period=period)
+            
+            if not hist.empty and len(hist) > 30:
+                hist_with_indicators = calculate_all_indicators(hist)
+                latest = hist_with_indicators.iloc[-1]
+                
+                signals, overall = generate_trading_signals(latest)
+                
+                signal_color = overall[3]
+                st.markdown(f"""
+                <div style="background-color: {signal_color}20; padding: 1rem; border-radius: 10px; border-left: 4px solid {signal_color}; margin: 1rem 0;">
+                    <h3 style="color: {signal_color}; margin: 0;">{overall[1]} (信号强度: {overall[2]})</h3>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                st.markdown("### 📊 K线图")
+                fig_k = go.Figure()
+                
+                fig_k.add_trace(go.Candlestick(
+                    x=hist_with_indicators.index,
+                    open=hist_with_indicators['Open'],
+                    high=hist_with_indicators['High'],
+                    low=hist_with_indicators['Low'],
+                    close=hist_with_indicators['Close'],
+                    name='K线',
+                    showlegend=False
+                ))
+                
+                fig_k.add_trace(go.Scatter(
+                    x=hist_with_indicators.index,
+                    y=hist_with_indicators['BB_Upper'],
+                    line=dict(color='rgba(250, 128, 114, 0.5)', width=1),
+                    name='上轨'
+                ))
+                
+                fig_k.add_trace(go.Scatter(
+                    x=hist_with_indicators.index,
+                    y=hist_with_indicators['BB_Lower'],
+                    line=dict(color='rgba(250, 128, 114, 0.5)', width=1),
+                    name='下轨',
+                    fill='tonexty',
+                    fillcolor='rgba(250, 128, 114, 0.1)'
+                ))
+                
+                fig_k.add_trace(go.Scatter(
+                    x=hist_with_indicators.index,
+                    y=hist_with_indicators['BB_Middle'],
+                    line=dict(color='orange', width=1, dash='dash'),
+                    name='中轨'
+                ))
+                
+                fig_k.update_layout(
+                    height=500,
+                    title=f"{stock_info['名称']} ({selected_code}) - K线图",
+                    hovermode='x unified',
+                    xaxis_rangeslider_visible=False
+                )
+                
+                st.plotly_chart(fig_k, use_container_width=True)
+                
+                st.markdown("### 📊 成交量图")
+                fig_v = go.Figure()
+                
+                colors = ['red' if hist_with_indicators['Close'].iloc[i] >= hist_with_indicators['Open'].iloc[i] 
+                         else 'green' for i in range(len(hist_with_indicators))]
+                
+                fig_v.add_trace(go.Bar(
+                    x=hist_with_indicators.index,
+                    y=hist_with_indicators['Volume'],
+                    name='成交量',
+                    marker_color=colors,
+                    opacity=0.7
+                ))
+                
+                fig_v.update_layout(
+                    height=300,
+                    title=f"{stock_info['名称']} ({selected_code}) - 成交量",
+                    hovermode='x unified',
+                    xaxis_rangeslider_visible=False,
+                    yaxis_title="成交量"
+                )
+                
+                st.plotly_chart(fig_v, use_container_width=True)
+                
+                st.markdown("### 📊 技术指标")
+                fig_tech = make_subplots(
+                    rows=4, cols=1,
+                    shared_xaxes=True,
+                    vertical_spacing=0.05,
+                    row_heights=[0.25, 0.25, 0.25, 0.25],
+                    subplot_titles=('MACD', 'KDJ', 'RSI', 'ATR & Bollinger Width')
+                )
+                
+                fig_tech.add_trace(go.Scatter(
+                    x=hist_with_indicators.index,
+                    y=hist_with_indicators['MACD'],
+                    line=dict(color='blue', width=2),
+                    name='MACD'
+                ), row=1, col=1)
+                
+                fig_tech.add_trace(go.Scatter(
+                    x=hist_with_indicators.index,
+                    y=hist_with_indicators['Signal'],
+                    line=dict(color='red', width=2),
+                    name='Signal'
+                ), row=1, col=1)
+                
+                colors_macd = ['red' if x < 0 else 'green' for x in hist_with_indicators['MACD_Hist']]
+                fig_tech.add_trace(go.Bar(
+                    x=hist_with_indicators.index,
+                    y=hist_with_indicators['MACD_Hist'],
+                    name='MACD Hist',
+                    marker_color=colors_macd,
+                    opacity=0.5,
+                    showlegend=False
+                ), row=1, col=1)
+                
+                fig_tech.add_trace(go.Scatter(
+                    x=hist_with_indicators.index,
+                    y=hist_with_indicators['K'],
+                    line=dict(color='blue', width=2),
+                    name='K'
+                ), row=2, col=1)
+                
+                fig_tech.add_trace(go.Scatter(
+                    x=hist_with_indicators.index,
+                    y=hist_with_indicators['D'],
+                    line=dict(color='red', width=2),
+                    name='D'
+                ), row=2, col=1)
+                
+                fig_tech.add_trace(go.Scatter(
+                    x=hist_with_indicators.index,
+                    y=hist_with_indicators['J'],
+                    line=dict(color='green', width=2),
+                    name='J'
+                ), row=2, col=1)
+                
+                fig_tech.add_trace(go.Scatter(
+                    x=hist_with_indicators.index,
+                    y=hist_with_indicators['RSI'],
+                    line=dict(color='purple', width=2),
+                    name='RSI'
+                ), row=3, col=1)
+                
+                fig_tech.add_hline(y=70, line_dash="dash", line_color="red", opacity=0.5, row=3, col=1)
+                fig_tech.add_hline(y=30, line_dash="dash", line_color="green", opacity=0.5, row=3, col=1)
+                fig_tech.add_hline(y=50, line_dash="dot", line_color="gray", opacity=0.3, row=3, col=1)
+                
+                fig_tech.add_trace(go.Scatter(
+                    x=hist_with_indicators.index,
+                    y=hist_with_indicators['ATR_pct'],
+                    line=dict(color='brown', width=2),
+                    name='ATR%'
+                ), row=4, col=1)
+                
+                fig_tech.add_trace(go.Scatter(
+                    x=hist_with_indicators.index,
+                    y=hist_with_indicators['BB_Width'],
+                    line=dict(color='orange', width=2, dash='dash'),
+                    name='BB宽度%'
+                ), row=4, col=1)
+                
+                fig_tech.update_layout(
+                    height=800,
+                    showlegend=True,
+                    hovermode='x unified',
+                    title=f"{stock_info['名称']} ({selected_code}) - 技术指标"
+                )
+                
+                fig_tech.update_xaxes(rangeslider_visible=False)
+                fig_tech.update_layout(legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1))
+                
+                st.plotly_chart(fig_tech, use_container_width=True)
+                
+                st.markdown("### 📊 技术信号汇总")
+                signal_df = pd.DataFrame(signals, columns=['指标', '信号', '强度'])
+                signal_df['强度'] = signal_df['强度'].map({2: '++', 1: '+', 0: '○', -1: '-', -2: '--'})
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.dataframe(signal_df, use_container_width=True, hide_index=True)
+                
+                with col2:
+                    latest_df = pd.DataFrame({
+                        '指标': ['MACD', '信号线', 'K值', 'D值', 'J值', 'RSI', 'ATR%', '布林带宽%', '布林位置%'],
+                        '数值': [
+                            f"{latest['MACD']:.2f}",
+                            f"{latest['Signal']:.2f}",
+                            f"{latest['K']:.2f}",
+                            f"{latest['D']:.2f}",
+                            f"{latest['J']:.2f}",
+                            f"{latest['RSI']:.2f}",
+                            f"{latest['ATR_pct']:.2f}%",
+                            f"{latest['BB_Width']:.2f}%",
+                            f"{latest['BB_Position']:.2f}%"
+                        ]
+                    })
+                    st.dataframe(latest_df, use_container_width=True, hide_index=True)
+            else:
+                st.warning(f"股票 {stock_info['名称']} 历史数据不足，无法计算技术指标")
+
+    # --- Fundamental Analysis Section (Using cached data) ---
+    st.markdown('<div class="section-header">📚 基本面深度分析</div>', unsafe_allow_html=True)
     
+    # Display fundamental data for selected stock if cache exists
+    if selected_code and st.session_state.fundamentals_loaded and st.session_state.fundamentals_cache is not None:
+        yf_ticker = code_to_yf(selected_code)
+        fundamentals = st.session_state.fundamentals_cache.get(yf_ticker)
+        
+        if fundamentals and any(v != 0 for v in fundamentals.values() if isinstance(v, (int, float))):
+            st.markdown("### 关键指标")
+            cols = st.columns(5)
+            metrics = [
+                ('市值(亿)', f"{fundamentals['市值(亿)']:.0f}" if fundamentals['市值(亿)'] > 0 else 'N/A'),
+                ('PE(TTM)', f"{fundamentals['PE(TTM)']:.2f}" if fundamentals['PE(TTM)'] > 0 else 'N/A'),
+                ('PE(滚动)', f"{fundamentals['PE(滚动)']:.2f}" if fundamentals['PE(滚动)'] > 0 else 'N/A'),
+                ('PB', f"{fundamentals['PB']:.2f}" if fundamentals['PB'] > 0 else 'N/A'),
+                ('ROE(%)', f"{fundamentals['ROE(%)']:.1f}%" if fundamentals['ROE(%)'] > 0 else 'N/A'),
+            ]
+            
+            for idx, (label, value) in enumerate(metrics):
+                with cols[idx]:
+                    st.markdown(f"""
+                    <div class="fundamental-card">
+                        <div style="color: #4B5563; font-size: 0.9rem;">{label}</div>
+                        <div style="color: #111827; font-size: 1.5rem; font-weight: bold;">{value}</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+            
+            st.markdown("### 💰 估值与盈利能力")
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                valuation_df = pd.DataFrame({
+                    '指标': ['PEG', 'PS', '股息率(%)', 'Beta', 'EPS(滚动)'],
+                    '数值': [
+                        f"{fundamentals['PEG']:.2f}" if fundamentals['PEG'] > 0 else 'N/A',
+                        f"{fundamentals['PS']:.2f}" if fundamentals['PS'] > 0 else 'N/A',
+                        f"{fundamentals['股息率(%)']:.2f}%" if fundamentals['股息率(%)'] > 0 else 'N/A',
+                        f"{fundamentals['Beta']:.2f}" if fundamentals['Beta'] > 0 else 'N/A',
+                        f"{fundamentals['每股收益']:.2f}" if fundamentals['每股收益'] > 0 else 'N/A'
+                    ]
+                })
+                st.dataframe(valuation_df, use_container_width=True, hide_index=True)
+            
+            with col2:
+                profitability_df = pd.DataFrame({
+                    '指标': ['毛利率(%)', '净利率(%)', 'ROA(%)', '营收增长(%)', '资产负债率(%)'],
+                    '数值': [
+                        f"{fundamentals['毛利率(%)']:.1f}%" if fundamentals['毛利率(%)'] > 0 else 'N/A',
+                        f"{fundamentals['净利率(%)']:.1f}%" if fundamentals['净利率(%)'] > 0 else 'N/A',
+                        f"{fundamentals['ROA(%)']:.1f}%" if fundamentals['ROA(%)'] > 0 else 'N/A',
+                        f"{fundamentals['营收增长(%)']:.1f}%" if fundamentals['营收增长(%)'] > 0 else 'N/A',
+                        f"{fundamentals['资产负债率(%)']:.1f}%" if fundamentals['资产负债率(%)'] > 0 else 'N/A'
+                    ]
+                })
+                st.dataframe(profitability_df, use_container_width=True, hide_index=True)
+            
+            st.markdown("### 📈 盈利预测")
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                st.markdown(f"""
+                <div class="fundamental-card">
+                    <div style="color: #4B5563;">当前EPS</div>
+                    <div style="color: #111827; font-size: 1.3rem; font-weight: bold;">{fundamentals['每股收益']:.2f}</div>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            with col2:
+                st.markdown(f"""
+                <div class="fundamental-card">
+                    <div style="color: #4B5563;">预期EPS</div>
+                    <div style="color: #111827; font-size: 1.3rem; font-weight: bold;">{fundamentals['forward_eps']:.2f}</div>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            with col3:
+                if fundamentals['每股收益'] > 0 and fundamentals['forward_eps'] > 0:
+                    growth = ((fundamentals['forward_eps'] / fundamentals['每股收益']) - 1) * 100
+                    st.markdown(f"""
+                    <div class="fundamental-card">
+                        <div style="color: #4B5563;">预期增长</div>
+                        <div style="color: {'#EF4444' if growth > 0 else '#10B981'}; font-size: 1.3rem; font-weight: bold;">{growth:.1f}%</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+            
+            st.markdown("### 📊 价格水平")
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                current = stock_info['最新价']
+                high_52w = fundamentals['52周高点']
+                low_52w = fundamentals['52周低点']
+                
+                if high_52w > 0:
+                    from_high = ((high_52w - current) / high_52w) * 100
+                    from_low = ((current - low_52w) / low_52w) * 100
+                    
+                    st.markdown(f"""
+                    <div class="fundamental-card">
+                        <div style="color: #4B5563;">当前价格: <span style="color: #111827; font-weight: bold;">{current:.2f}</span></div>
+                        <div style="color: #4B5563;">52周高点: <span style="color: #111827;">{high_52w:.2f}</span> <span style="color: #EF4444;">(距离 {from_high:.1f}%)</span></div>
+                        <div style="color: #4B5563;">52周低点: <span style="color: #111827;">{low_52w:.2f}</span> <span style="color: #10B981;">(距离 {from_low:.1f}%)</span></div>
+                    </div>
+                    """, unsafe_allow_html=True)
+            
+            if fundamentals.get('longBusinessSummary'):
+                with st.expander("公司业务概览"):
+                    st.write(fundamentals['longBusinessSummary'])
+        else:
+            st.warning("""
+            ⚠️ 无法获取该股票的基本面数据 - 可能原因:
+            - 该股票没有完整的基本面数据
+            - API 返回数据不完整
+            """)
+    elif selected_code and not st.session_state.fundamentals_loaded:
+        st.info("💡 点击上方'加载基本面数据'按钮获取完整基本面分析")
+
     # --- Index charts with EMAs ---
     st.markdown("### 📈 主要指数技术分析")
     indices = {
